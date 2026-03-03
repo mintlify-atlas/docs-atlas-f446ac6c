@@ -1,0 +1,425 @@
+---
+title: 'Performance Optimization'
+description: 'Threading, grid resolution, and runtime optimization tips'
+---
+
+Hot Moon simulations can be computationally intensive, especially for high-resolution 2D grids with moisture coupling. This guide covers strategies to maximize performance and minimize runtime.
+
+## Multithreading
+
+<Info>
+  Hot Moon automatically uses Julia's multithreading when available. Threading benefits scale with grid size.
+</Info>
+
+### Enable Threading
+
+Set the number of threads when launching Julia:
+
+```bash
+# Use 4 threads
+julia -t 4 scripts/run_2d.jl
+
+# Use all available cores
+julia -t auto scripts/run_2d_moisture.jl
+
+# Check thread count
+julia -e 'println("Threads: ", Threads.nthreads())'
+```
+
+<Tip>
+  **Optimal thread count**: Use physical cores, not hyperthreads. For a 16-core CPU, use `-t 8` or `-t 16` depending on hyperthreading.
+</Tip>
+
+### Threading Threshold
+
+Threading only activates for grids with ≥ 100 cells:
+
+```julia
+# From src/constants.jl
+THREADING_MIN_CELLS = 100
+
+# Check if threading will be used
+using HotMoon
+moon = HotMoonBody(90, 180)
+n_cells = moon.n_lat * moon.n_lon
+println("Cells: $n_cells, threading: $(should_thread(n_cells))")
+```
+
+Small grids (< 100 cells) run faster without threading overhead.
+
+### Manual Threading Control
+
+```julia
+# Disable threading (for debugging)
+set_threading(false)
+
+# Re-enable
+set_threading(true)
+
+# Check status
+status = get_threading_status()
+println("Threading enabled: $(status.enabled)")
+println("Available threads: $(status.available_threads)")
+println("Min cells for threading: $(status.min_cells)")
+```
+
+### Expected Speedup
+
+| Grid Size | Threads=1 | Threads=4 | Threads=8 | Speedup (8 threads) |
+|-----------|-----------|-----------|-----------|---------------------|
+| 45×90     | 2 min     | 1 min     | 0.8 min   | 2.5x                |
+| 90×180    | 15 min    | 5 min     | 3 min     | 5x                  |
+| 180×360   | 2 hr      | 35 min    | 20 min    | 6x                  |
+| 360×720   | 16 hr     | 4 hr      | 2.5 hr    | 6.4x                |
+
+<Warning>
+  Speedup saturates around 6-8 threads due to memory bandwidth limits. Using 16+ threads rarely helps.
+</Warning>
+
+## Grid Resolution Trade-offs
+
+Runtime scales as `O(n_lat × n_lon)`:
+
+### Recommended Resolutions by Use Case
+
+| Resolution | Cells   | Runtime (8 threads, 10k hours) | Use Case |
+|------------|---------|--------------------------------|----------|
+| 18×36      | 648     | 10 sec                         | Quick physics tests |
+| 45×90      | 4,050   | 1 min                          | Rapid iteration |
+| 90×180     | 16,200  | 3 min                          | **Standard simulations** |
+| 180×360    | 64,800  | 20 min                         | High-resolution research |
+| 360×720    | 259,200 | 2.5 hr                         | Publication quality |
+
+<Tip>
+  **Start with 90×180** for initial exploration. Scale up only if you need finer spatial detail for specific features (e.g., narrow mountain ranges, small islands).
+</Tip>
+
+### Resolution vs Scientific Fidelity
+
+Many climate patterns saturate by 90×180:
+- Global temperature gradients: converged at 45×90
+- Continental vs oceanic climates: converged at 90×180
+- Large-scale precipitation patterns: converged at 90×180
+- Fine rain shadows: requires 180×360
+- Island microclimates: requires 360×720
+
+### Aspect Ratio
+
+Maintain `n_lon = 2 × n_lat` for roughly square grid cells:
+
+```julia
+# Good (square cells)
+moon = HotMoonBody(90, 180)   # Cell: 2° × 2°
+moon = HotMoonBody(180, 360)  # Cell: 1° × 1°
+
+# Avoid (stretched cells)
+moon = HotMoonBody(90, 90)    # Cell: 2° × 4° (wide)
+moon = HotMoonBody(90, 360)   # Cell: 2° × 1° (tall)
+```
+
+Stretched cells can cause numerical artifacts in transport.
+
+## Simulation Duration
+
+### Equilibration Time
+
+<Info>
+  Climate variables equilibrate at different rates:
+  - **Temperature**: 5,000-10,000 hours
+  - **Moisture**: 10,000-15,000 hours
+  - **Biomes**: 15,000-20,000 hours
+</Info>
+
+```julia
+# Quick test (not equilibrated)
+sim_hours = 2000.0
+
+# Temperature equilibrium
+sim_hours = 10000.0
+
+# Moisture equilibrium (recommended)
+sim_hours = 15000.0
+
+# Full biome equilibrium
+sim_hours = 20000.0
+```
+
+### Adaptive Stopping (Advanced)
+
+Monitor global mean temperature to detect equilibrium:
+
+```julia
+# Track global mean every 500 hours
+function check_equilibrium(sol, moon, threshold=0.1)
+    if length(sol.t) < 100
+        return false
+    end
+    
+    # Last 1000 hours
+    recent_idx = findfirst(t -> t >= sol.t[end] - 1000*3600, sol.t)
+    recent_means = [sum(extract_temperature_field(sol.u[i], moon) .* moon.cell_areas)
+                    for i in recent_idx:length(sol.t)]
+    
+    # Check if std dev is small
+    return std(recent_means) < threshold
+end
+```
+
+## ODE Solver Settings
+
+The default solver is `Tsit5()` with adaptive timestepping. For performance tuning:
+
+```julia
+using DifferentialEquations
+
+# Default (balanced)
+sol = run_simulation(moon, sim_hours, T0)
+
+# Custom solver with relaxed tolerance (faster, less accurate)
+using DifferentialEquations
+sol = solve(
+    prob,
+    Tsit5(),
+    reltol=1e-4,  # Default: 1e-3
+    abstol=1e-4,  # Default: 1e-6
+    saveat=1800.0  # Save every 30 min
+)
+
+# Tighter tolerance (slower, more accurate)
+sol = solve(
+    prob,
+    Tsit5(),
+    reltol=1e-5,
+    abstol=1e-8
+)
+```
+
+<Warning>
+  Relaxing tolerances too much (> 1e-3) can cause energy conservation violations and numerical instabilities.
+</Warning>
+
+## Memory Management
+
+### State Vector Size
+
+- **Temperature-only**: `n_lat × n_lon` floats (~130 KB for 90×180)
+- **Moisture-coupled**: `2 × n_lat × n_lon` floats (~260 KB for 90×180)
+- **Two-layer**: `4 × n_lat × n_lon` floats (~520 KB for 90×180)
+
+### Solution Storage
+
+With default 30-minute save intervals:
+
+```julia
+# 10,000 hours / 0.5 hour = 20,000 timesteps
+# 90×180 moisture: 20,000 × 260 KB = 5.2 GB
+```
+
+Reduce memory by:
+
+**1. Increase save interval**:
+```julia
+# Save every 2 hours instead of 30 min
+sol = solve(prob, Tsit5(), saveat=7200.0)  # 2 hours in seconds
+```
+
+**2. Limit saved timesteps**:
+```julia
+# Keep only last 1000 hours
+using DifferentialEquations
+sol = solve(
+    prob,
+    Tsit5(),
+    save_everystep=false,
+    saveat=1800.0,
+    save_start=false,
+    dense=false
+)
+```
+
+**3. Don't serialize solution**:
+```julia
+config = RunConfig("2d_moisture")
+config.save_solution = false  # Only save plots, not raw data
+```
+
+## Progress Callbacks
+
+Progress updates have negligible overhead:
+
+```julia
+# Frequent updates (every 100 hours) - minimal impact
+progress = make_progress_callback(sim_hours, update_interval_hours=100)
+
+# Infrequent updates (every 1000 hours) - basically free
+progress = make_progress_callback(sim_hours, update_interval_hours=1000)
+
+# No progress callback - saves ~0.5% runtime
+sol = run_simulation(moon, sim_hours, T0)  # No callback
+```
+
+## Visualization Performance
+
+### Plot Generation
+
+```julia
+# Fast: Generate only essential plots
+config = RunConfig("2d_moisture")
+config.generate_plots = false  # Skip plots entirely
+
+# OR selectively generate
+generate_plots!(ctx, sol, moon)  # ~10-30 seconds for 90×180
+```
+
+### Animation Generation
+
+<Warning>
+  Animations are the slowest part of output generation (1-5 minutes per GIF).
+</Warning>
+
+```julia
+# Fast: Skip animations
+config.generate_animations = false
+
+# Faster: Reduce frames
+generate_animations!(ctx, sol, moon, 
+    hours=224,       # Half metacycle instead of 448
+    frame_skip=8,    # Every 8th frame instead of 4
+    fps=5)           # Slower playback
+
+# Faster: Lower resolution moon
+moon = HotMoonBody(45, 90, ...)  # 1/4 the pixels
+```
+
+## Benchmarking
+
+### Full Pipeline Benchmark
+
+```julia
+using BenchmarkTools
+
+moon = HotMoonBody(90, 180, seed=32, sea_level=0.05, scale=0.01, octaves=5)
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+
+@time sol = run_simulation_with_moisture(moon, 1000.0, T0, M0)
+# First run: includes compilation time
+
+@time sol = run_simulation_with_moisture(moon, 1000.0, T0, M0)
+# Second run: actual runtime without compilation
+```
+
+### Solver Performance Profiling
+
+```julia
+using Profile
+using ProfileView
+
+# Profile the simulation
+@profile sol = run_simulation_with_moisture(moon, 1000.0, T0, M0)
+
+# View results
+ProfileView.view()
+```
+
+Hotspots are typically:
+- `compute_heat_transport!` (30-40%)
+- `compute_moisture_transport!` (20-30%)
+- `compute_orographic_precipitation_rate` (10-15%)
+- ODE solver overhead (20-30%)
+
+## Computational Complexity
+
+### Per-Timestep Cost
+
+| Component | Complexity | Notes |
+|-----------|------------|-------|
+| Solar geometry | O(N) | Zenith angle per cell |
+| Heat transport | O(4N) | 4 neighbors per cell |
+| Moisture transport | O(4N) | 4 neighbors per cell |
+| Precipitation | O(N) | Per-cell computation |
+| **Total** | **O(N)** | N = n_lat × n_lon |
+
+Doubling resolution quadruples cost.
+
+### Moisture vs Temperature-Only
+
+- **State size**: 2x larger
+- **Transport**: 2x (heat + moisture)
+- **Precipitation**: New cost
+- **Total**: ~2.5x slower
+
+### Two-Layer Model
+
+- **State size**: 4x larger (T, M, U, M_up)
+- **Total**: ~4-5x slower than temperature-only
+
+## Platform-Specific Tips
+
+### Linux
+
+```bash
+# Use all cores
+julia -t auto scripts/run_2d.jl
+
+# Pin threads to cores (NUMA systems)
+JULIA_EXCLUSIVE=1 julia -t 8 scripts/run_2d.jl
+```
+
+### macOS
+
+```bash
+# Apple Silicon benefits from auto threading
+julia -t auto scripts/run_2d.jl
+```
+
+### Windows
+
+```powershell
+# Use explicit thread count (auto can be unstable)
+julia -t 4 scripts/run_2d.jl
+```
+
+### HPC Clusters
+
+```bash
+#!/bin/bash
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=32G
+#SBATCH --time=4:00:00
+
+module load julia/1.9
+
+julia -t 16 scripts/run_2d_moisture.jl
+```
+
+## Quick Reference: Runtime Estimates
+
+**Temperature-only (10,000 hours simulation):**
+
+| Grid | 1 thread | 4 threads | 8 threads |
+|------|----------|-----------|----------|
+| 45×90 | 3 min | 1.5 min | 1 min |
+| 90×180 | 15 min | 5 min | 3 min |
+| 180×360 | 2 hr | 35 min | 20 min |
+| 360×720 | 16 hr | 4 hr | 2.5 hr |
+
+**Moisture-coupled (15,000 hours simulation):**
+
+| Grid | 1 thread | 4 threads | 8 threads |
+|------|----------|-----------|----------|
+| 45×90 | 8 min | 4 min | 2.5 min |
+| 90×180 | 45 min | 15 min | 9 min |
+| 180×360 | 6 hr | 1.5 hr | 1 hr |
+| 360×720 | 48 hr | 12 hr | 7 hr |
+
+<Info>
+  Estimates are for typical hardware (Intel/AMD 3-4 GHz CPU, 16+ GB RAM). Actual times vary by ±30%.
+</Info>
+
+## Next Steps
+
+- Apply these tips to [1D simulations](/guides/1d-simulations) for rapid prototyping
+- Optimize [terrain generation](/guides/terrain-generation) parameters before large runs
+- Use [visualization](/guides/visualization) efficiently with downsampling
+- Check the [API reference](/api/simulation-functions) for low-level performance tuning

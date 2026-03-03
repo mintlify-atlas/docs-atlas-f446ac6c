@@ -1,0 +1,753 @@
+---
+title: Biome Functions
+description: Functions for classifying biomes and computing heat capacity with smooth blending
+---
+
+## Overview
+
+Biome functions classify cells into ecological zones (ocean, desert, forest, tundra, etc.) based on temperature, moisture, and elevation. They compute blended heat capacity values using smooth hyperbolic tangent transitions to avoid discontinuities in the ODE solver. The system supports 12 distinct biome types with realistic thermal properties.
+
+---
+
+## Temperature Zone Weights
+
+These functions compute smooth weights for temperature-based climate zones using tanh transitions.
+
+### compute_ice_zone_weight
+
+Compute weight for ice sheet zone (T < -10°C).
+
+```julia
+compute_ice_zone_weight(T::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for ice zone (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- Weight approaches 1.0 when T < 263 K (-10°C)
+- Weight approaches 0.0 when T > 263 K
+- `BIOME_T_ICE = 263.15` K (ice threshold)
+- `BIOME_T_WIDTH = 5.0` K (transition smoothness)
+- Formula: `0.5 * (1 - tanh((T - 263.15) / 5.0))`
+
+**Example**
+
+```julia
+w = compute_ice_zone_weight(250.0)  # ~0.95 (very cold)
+w = compute_ice_zone_weight(263.15) # 0.5 (transition center)
+w = compute_ice_zone_weight(280.0)  # ~0.05 (warm)
+```
+
+---
+
+### compute_tundra_zone_weight
+
+Compute weight for tundra zone (-10°C ≤ T < 0°C).
+
+```julia
+compute_tundra_zone_weight(T::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for tundra zone (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- Combines lower bound (above ice) and upper bound (below cold)
+- `BIOME_T_TUNDRA = 273.15` K (0°C)
+- Maximum weight ~1.0 occurs around 268 K (-5°C)
+- Formula: `lower * upper` where both are tanh-based
+
+**Example**
+
+```julia
+w = compute_tundra_zone_weight(268.0)  # ~0.98 (peak tundra)
+w = compute_tundra_zone_weight(273.15) # ~0.50
+w = compute_tundra_zone_weight(250.0)  # ~0.05 (too cold)
+```
+
+---
+
+### compute_cold_zone_weight
+
+Compute weight for cold zone (0°C ≤ T < 10°C).
+
+```julia
+compute_cold_zone_weight(T::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for cold zone (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- `BIOME_T_COLD = 283.15` K (10°C)
+- Peak weight around 278 K (5°C)
+- Typical biomes: boreal forest (wet) or cold steppe (dry)
+
+---
+
+### compute_temperate_zone_weight
+
+Compute weight for temperate zone (10°C ≤ T < 20°C).
+
+```julia
+compute_temperate_zone_weight(T::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for temperate zone (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- `BIOME_T_TEMPERATE = 293.15` K (20°C)
+- Peak weight around 288 K (15°C)
+- Typical biomes: temperate forest (wet) or grassland (dry)
+
+---
+
+### compute_hot_zone_weight
+
+Compute weight for hot zone (T ≥ 20°C).
+
+```julia
+compute_hot_zone_weight(T::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for hot zone (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- Weight approaches 1.0 when T > 293 K (20°C)
+- Typical biomes: tropical forest, savanna, hot desert (depends on moisture)
+
+**Example**
+
+```julia
+w = compute_hot_zone_weight(300.0)  # ~0.95 (tropical)
+w = compute_hot_zone_weight(293.15) # 0.5
+w = compute_hot_zone_weight(280.0)  # ~0.05
+```
+
+---
+
+### compute_all_temperature_zone_weights
+
+Compute all temperature zone weights at once.
+
+```julia
+compute_all_temperature_zone_weights(T::Real) -> NamedTuple
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ResponseField name="weights" type="NamedTuple">
+  Named tuple with fields: ice, tundra, cold, temperate, hot
+</ResponseField>
+
+**Example**
+
+```julia
+weights = compute_all_temperature_zone_weights(285.0)
+# → (ice=0.0, tundra=0.05, cold=0.4, temperate=0.5, hot=0.05)
+
+# Weights sum approximately to 1.0 (due to overlapping transitions)
+sum_weights = weights.ice + weights.tundra + weights.cold + weights.temperate + weights.hot
+```
+
+---
+
+## Moisture Zone Weights
+
+### compute_dry_moisture_weight
+
+Compute weight for dry conditions (M < 3.0 kg/m²).
+
+```julia
+compute_dry_moisture_weight(M::Real) -> Float64
+```
+
+<ParamField path="M" type="Real" required>
+  Atmospheric moisture in kg/m²
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for dry conditions (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- `BIOME_M_DRY = 3.0` kg/m²
+- `BIOME_M_WIDTH = 1.0` kg/m² (transition smoothness)
+- Weight → 1.0 when M < 3.0 (dry)
+
+**Example**
+
+```julia
+w = compute_dry_moisture_weight(1.0)  # ~0.95 (very dry)
+w = compute_dry_moisture_weight(3.0)  # 0.5
+w = compute_dry_moisture_weight(6.0)  # ~0.05 (wet)
+```
+
+---
+
+### compute_wet_moisture_weight
+
+Compute weight for wet conditions (M ≥ 5.0 kg/m²).
+
+```julia
+compute_wet_moisture_weight(M::Real) -> Float64
+```
+
+<ParamField path="M" type="Real" required>
+  Atmospheric moisture in kg/m²
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for wet conditions (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- `BIOME_M_MODERATE = 5.0` kg/m²
+- Weight → 1.0 when M > 5.0 (wet)
+
+---
+
+### compute_desert_moisture_weight
+
+Compute weight for desert conditions (very dry, M < 1.0 kg/m²).
+
+```julia
+compute_desert_moisture_weight(M::Real) -> Float64
+```
+
+<ParamField path="M" type="Real" required>
+  Atmospheric moisture in kg/m²
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for desert conditions (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- `BIOME_M_DESERT = 1.0` kg/m²
+- Weight → 1.0 when M < 1.0 (extreme dryness)
+
+---
+
+### compute_forest_moisture_weight
+
+Compute weight for forest conditions (very wet, M ≥ 8.0 kg/m²).
+
+```julia
+compute_forest_moisture_weight(M::Real) -> Float64
+```
+
+<ParamField path="M" type="Real" required>
+  Atmospheric moisture in kg/m²
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for forest conditions (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- `BIOME_M_WET = 8.0` kg/m²
+- Weight → 1.0 when M > 8.0 (rainforest conditions)
+
+---
+
+## Elevation Zone Weights
+
+### compute_mountain_elevation_weight
+
+Compute weight for mountain terrain (elevation > 0.6).
+
+```julia
+compute_mountain_elevation_weight(elevation::Real) -> Float64
+```
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation (-1.0 to 1.0)
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for mountain biome (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- `BIOME_ELEV_MOUNTAIN = 0.6` (normalized)
+- Weight → 1.0 when elevation > 0.6
+- Mountains have low heat capacity (bare rock)
+
+**Example**
+
+```julia
+w = compute_mountain_elevation_weight(0.9)  # ~0.95 (high peak)
+w = compute_mountain_elevation_weight(0.6)  # 0.5
+w = compute_mountain_elevation_weight(0.3)  # ~0.05 (lowland)
+```
+
+---
+
+### compute_wetland_elevation_weight
+
+Compute weight for wetland terrain (0 < elevation < 0.1).
+
+```julia
+compute_wetland_elevation_weight(elevation::Real) -> Float64
+```
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation
+</ParamField>
+
+<ResponseField name="weight" type="Float64">
+  Weight for wetland biome (0.0 to 1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- `BIOME_ELEV_WETLAND = 0.1` (normalized)
+- Weight → 1.0 when 0 < elevation < 0.1 (coastal lowlands)
+- Wetlands have high heat capacity (saturated soil)
+
+---
+
+## Heat Capacity Blending
+
+### blend_cold_zone_heat_capacity
+
+Blend heat capacity for cold zone between boreal forest and cold steppe.
+
+```julia
+blend_cold_zone_heat_capacity(wet_weight::Real) -> Float64
+```
+
+<ParamField path="wet_weight" type="Real" required>
+  Weight for wet conditions (0.0 to 1.0)
+</ParamField>
+
+<ResponseField name="heat_capacity" type="Float64">
+  Blended heat capacity in J/(m²·K)
+</ResponseField>
+
+**Implementation Details**
+
+- Wet → boreal forest (higher heat capacity)
+- Dry → cold steppe (lower heat capacity)
+- Linear interpolation: `wet_weight * HC_boreal + (1 - wet_weight) * HC_steppe`
+
+---
+
+### blend_temperate_zone_heat_capacity
+
+Blend heat capacity for temperate zone between forest and grassland.
+
+```julia
+blend_temperate_zone_heat_capacity(wet_weight::Real) -> Float64
+```
+
+<ParamField path="wet_weight" type="Real" required>
+  Weight for wet conditions (0.0 to 1.0)
+</ParamField>
+
+<ResponseField name="heat_capacity" type="Float64">
+  Blended heat capacity in J/(m²·K)
+</ResponseField>
+
+**Implementation Details**
+
+- Wet → temperate forest
+- Dry → grassland
+
+---
+
+### blend_hot_zone_heat_capacity
+
+Blend heat capacity for hot zone between tropical forest, savanna, and desert.
+
+```julia
+blend_hot_zone_heat_capacity(M::Real) -> Float64
+```
+
+<ParamField path="M" type="Real" required>
+  Atmospheric moisture in kg/m²
+</ParamField>
+
+<ResponseField name="heat_capacity" type="Float64">
+  Blended heat capacity in J/(m²·K)
+</ResponseField>
+
+**Implementation Details**
+
+- Three-way blend based on moisture thresholds:
+  - Very wet (M > 8.0) → tropical forest
+  - Moderate (1.0 < M < 8.0) → savanna
+  - Very dry (M < 1.0) → hot desert
+- Uses `compute_desert_moisture_weight` and `compute_forest_moisture_weight`
+- Savanna weight fills the gap: `max(0, 1 - desert_weight - forest_weight)`
+
+**Example**
+
+```julia
+# Rainforest
+hc = blend_hot_zone_heat_capacity(15.0)  # High heat capacity
+
+# Savanna
+hc = blend_hot_zone_heat_capacity(4.0)   # Medium heat capacity
+
+# Desert
+hc = blend_hot_zone_heat_capacity(0.5)   # Low heat capacity
+```
+
+---
+
+### blend_climate_zone_heat_capacity
+
+Blend heat capacity across all temperature zones for a given moisture level.
+
+```julia
+blend_climate_zone_heat_capacity(temp_weights, M::Real) -> Float64
+```
+
+<ParamField path="temp_weights" type="NamedTuple" required>
+  Temperature zone weights from `compute_all_temperature_zone_weights`
+</ParamField>
+
+<ParamField path="M" type="Real" required>
+  Atmospheric moisture in kg/m²
+</ParamField>
+
+<ResponseField name="heat_capacity" type="Float64">
+  Blended heat capacity in J/(m²·K)
+</ResponseField>
+
+**Implementation Details**
+
+- Computes heat capacity for each temperature zone
+- Blends using temperature weights
+- Formula: `Σ(weight_zone * HC_zone)` for ice, tundra, cold, temperate, hot
+- Cold/temperate/hot zones further blend based on moisture
+
+---
+
+### compute_biome_blended_heat_capacity
+
+Calculate heat capacity using smooth biome blending.
+
+```julia
+compute_biome_blended_heat_capacity(T::Real, M::Real, elevation::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ParamField path="M" type="Real" required>
+  Atmospheric moisture in kg/m²
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation (-1.0 to 1.0)
+</ParamField>
+
+<ResponseField name="heat_capacity" type="Float64">
+  Blended heat capacity in J/(m²·K)
+</ResponseField>
+
+**Implementation Details**
+
+- **Ocean cells** (elevation < 0): Use ocean heat capacity scaled by depth
+  - Formula: `HC_ocean * clamp(1 - elevation, 1.0, 2.0)`
+  - Deeper ocean → higher heat capacity (more thermal mass)
+  
+- **Mountains** (elevation > 0.6): Blend towards mountain heat capacity
+  - Pure mountain if weight > 0.99
+  
+- **Wetlands** (0 < elevation < 0.1): Blend wetland with climate-based capacity
+  
+- **Land cells**: Use climate-based blending (temperature × moisture)
+
+- **Final blend**: `mountain_weight * HC_mountain + (1 - mountain_weight) * HC_land`
+
+**Example**
+
+```julia
+# Deep ocean
+hc = compute_biome_blended_heat_capacity(285.0, 10.0, -0.8)  # ~8e6 J/(m²·K)
+
+# Tropical rainforest
+hc = compute_biome_blended_heat_capacity(298.0, 15.0, 0.3)   # ~5e6 J/(m²·K)
+
+# Hot desert
+hc = compute_biome_blended_heat_capacity(305.0, 0.5, 0.2)    # ~2e6 J/(m²·K)
+
+# Mountain peak
+hc = compute_biome_blended_heat_capacity(270.0, 2.0, 0.9)    # ~1.5e6 J/(m²·K)
+
+# Ice sheet
+hc = compute_biome_blended_heat_capacity(250.0, 0.1, 0.6)    # ~2.5e6 J/(m²·K)
+```
+
+---
+
+## Biome Classification
+
+### classify_cell_biome
+
+Classify a cell into one of 12 biome types for visualization.
+
+```julia
+classify_cell_biome(T::Real, M::Real, elevation::Real) -> Int
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ParamField path="M" type="Real" required>
+  Atmospheric moisture in kg/m²
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation
+</ParamField>
+
+<ResponseField name="biome_id" type="Int">
+  Biome type ID (0-11)
+</ResponseField>
+
+**Biome Types**
+
+| ID | Name | Conditions |
+|----|------|------------|
+| 0 | Ocean | elevation < 0 |
+| 1 | Ice Sheet | T < 263 K (-10°C) |
+| 2 | Tundra | 263 K ≤ T < 273 K |
+| 3 | Cold Steppe | 273 K ≤ T < 283 K, M < 3.0 |
+| 4 | Boreal Forest | 273 K ≤ T < 283 K, M ≥ 3.0 |
+| 5 | Grassland | 283 K ≤ T < 293 K, M < 5.0 |
+| 6 | Temperate Forest | 283 K ≤ T < 293 K, M ≥ 5.0 |
+| 7 | Hot Desert | T ≥ 293 K, M < 1.0 |
+| 8 | Savanna | T ≥ 293 K, 1.0 ≤ M < 8.0 |
+| 9 | Tropical Forest | T ≥ 293 K, M ≥ 8.0 |
+| 10 | Mountain | elevation > 0.6 |
+| 11 | Wetland | 0 < elevation < 0.1 |
+
+**Implementation Details**
+
+- Uses hard thresholds (not tanh) for discrete classification
+- Priority order: Ocean → Mountain → Wetland → Temperature-based
+- Returns integer ID for indexing into color maps
+
+**Example**
+
+```julia
+# Ocean
+biome = classify_cell_biome(285.0, 10.0, -0.5)  # 0 (BIOME_OCEAN)
+
+# Tropical rainforest
+biome = classify_cell_biome(298.0, 15.0, 0.3)   # 9 (BIOME_TROPICAL_FOREST)
+
+# Hot desert
+biome = classify_cell_biome(305.0, 0.3, 0.2)    # 7 (BIOME_HOT_DESERT)
+
+# Tundra
+biome = classify_cell_biome(268.0, 2.0, 0.4)    # 2 (BIOME_TUNDRA)
+
+# Mountain (overrides temperature)
+biome = classify_cell_biome(280.0, 5.0, 0.8)    # 10 (BIOME_MOUNTAIN)
+```
+
+---
+
+## Simplified Heat Capacity Functions
+
+### compute_latitude_based_heat_capacity
+
+Return heat capacity based on latitude zone.
+
+```julia
+compute_latitude_based_heat_capacity(lat_deg::Real) -> Float64
+```
+
+<ParamField path="lat_deg" type="Real" required>
+  Latitude in degrees (-90 to 90)
+</ParamField>
+
+<ResponseField name="heat_capacity" type="Float64">
+  Heat capacity in J/(m²·K)
+</ResponseField>
+
+**Implementation Details**
+
+- Used for 1D simulations (latitude bands only)
+- Three zones:
+  - Equatorial (|lat| < 23.5°): `HEAT_CAPACITY_EQUATORIAL`
+  - Mid-latitude (23.5° ≤ |lat| < 66.5°): `HEAT_CAPACITY_MIDLAT`
+  - Polar (|lat| ≥ 66.5°): `HEAT_CAPACITY_POLAR`
+
+**Example**
+
+```julia
+hc = compute_latitude_based_heat_capacity(0.0)    # Equatorial
+hc = compute_latitude_based_heat_capacity(45.0)   # Mid-latitude
+hc = compute_latitude_based_heat_capacity(80.0)   # Polar
+```
+
+---
+
+### compute_elevation_based_heat_capacity
+
+Return heat capacity based on elevation and latitude.
+
+```julia
+compute_elevation_based_heat_capacity(lat_deg::Real, elevation::Real) -> Float64
+```
+
+<ParamField path="lat_deg" type="Real" required>
+  Latitude in degrees
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation
+</ParamField>
+
+<ResponseField name="heat_capacity" type="Float64">
+  Heat capacity in J/(m²·K)
+</ResponseField>
+
+**Implementation Details**
+
+- Used for 2D temperature-only simulations (no moisture tracking)
+- Ocean: Scaled by depth
+- Wetland (0 < elev < 0.15): Linear blend from wetland to land
+- Mountain (elev > 0.5): Linear blend from land to mountain
+- Land: Uses latitude-based capacity
+
+**Example**
+
+```julia
+# Ocean at tropics
+hc = compute_elevation_based_heat_capacity(0.0, -0.5)  # High (ocean)
+
+# Wetland
+hc = compute_elevation_based_heat_capacity(30.0, 0.05) # High (wetland)
+
+# Normal land
+hc = compute_elevation_based_heat_capacity(45.0, 0.3)  # Medium
+
+# Mountain
+hc = compute_elevation_based_heat_capacity(45.0, 0.8)  # Low (rock)
+```
+
+---
+
+## Usage in Simulation
+
+Biome functions are critical for realistic thermal dynamics:
+
+```julia
+# In the ODE solver
+function temperature_derivative(T, M, elevation, lat, ...)
+    # Compute heat capacity based on current state
+    heat_capacity = compute_biome_blended_heat_capacity(T, M, elevation)
+    
+    # Energy balance
+    Q_net = Q_solar - Q_ir + Q_latent + Q_transport
+    
+    # Temperature change (heat capacity in denominator)
+    dT/dt = Q_net / heat_capacity
+    
+    # Higher heat capacity → slower temperature changes → more stable climate
+end
+```
+
+**Physical Effects**
+
+- **Oceans**: High heat capacity → slow seasonal changes → moderate climate
+- **Deserts**: Low heat capacity → fast response → extreme daily/seasonal swings
+- **Forests**: Medium-high capacity → buffered temperatures
+- **Mountains**: Low capacity → rapid cooling at night, heating during day
+
+---
+
+## Typical Heat Capacity Values
+
+| Biome | Heat Capacity (J/(m²·K)) |
+|-------|-------------------------|
+| Ocean (deep) | ~8,000,000 |
+| Wetland | ~5,000,000 |
+| Tropical Forest | ~4,500,000 |
+| Boreal Forest | ~4,000,000 |
+| Temperate Forest | ~3,500,000 |
+| Grassland | ~2,800,000 |
+| Tundra | ~2,500,000 |
+| Ice Sheet | ~2,500,000 |
+| Savanna | ~2,200,000 |
+| Hot Desert | ~1,500,000 |
+| Mountain | ~1,500,000 |
+| Cold Steppe | ~2,000,000 |
+
+---
+
+## Visualization Example
+
+```julia
+# Create biome map
+biome_map = zeros(Int, n_lat, n_lon)
+for i in 1:n_lat, j in 1:n_lon
+    biome_map[i, j] = classify_cell_biome(T[i,j], M[i,j], elevation[i,j])
+end
+
+# Color by biome type
+biome_colors = [
+    colorant"#0077be",  # 0: Ocean (blue)
+    colorant"#ffffff",  # 1: Ice Sheet (white)
+    colorant"#ccddee",  # 2: Tundra (light blue-gray)
+    colorant"#d4c4a8",  # 3: Cold Steppe (tan)
+    colorant"#2d5016",  # 4: Boreal Forest (dark green)
+    colorant"#c4b454",  # 5: Grassland (yellow-green)
+    colorant"#478935",  # 6: Temperate Forest (green)
+    colorant"#f4e4c1",  # 7: Hot Desert (sand)
+    colorant"#c4a661",  # 8: Savanna (brown-gold)
+    colorant"#0d5016",  # 9: Tropical Forest (deep green)
+    colorant"#8b7355",  # 10: Mountain (brown-gray)
+    colorant"#6b8e23",  # 11: Wetland (olive green)
+]
+```

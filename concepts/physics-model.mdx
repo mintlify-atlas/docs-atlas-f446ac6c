@@ -1,0 +1,435 @@
+---
+title: Physics Model
+description: Energy balance equations, radiative transfer, and climate feedbacks
+---
+
+## Core Energy Balance
+
+The Hot Moon simulator uses an **energy balance model** based on ordinary differential equations (ODEs), not full fluid dynamics. Each grid cell evolves according to:
+
+```
+dT/dt = (Q_in - Q_out + Q_transport + Q_latent) / C
+```
+
+Where:
+- **Q_in**: Solar heating (W/m²)
+- **Q_out**: Outgoing longwave radiation (W/m²)
+- **Q_transport**: Heat diffusion from neighbors (W/m²)
+- **Q_latent**: Latent heat from phase changes (W/m²)
+- **C**: Biome-dependent heat capacity (J/m²/K)
+
+<Info>
+This approach captures **radiative-transport equilibrium** without modeling individual fluid parcels, enabling efficient simulations over 100,000+ hours.
+</Info>
+
+## Solar Heating (Q_in)
+
+### Solar Geometry
+
+The solar zenith angle determines incoming radiation:
+
+```julia
+# 1D (latitude only)
+cos(zenith) = cos(lat) × cos(hour_angle)
+
+# 2D (latitude + longitude)
+cos(zenith) = cos(lat) × cos(2π × t / ROTATION_PERIOD + lon)
+```
+
+**Implementation details:**
+- Hour angle advances at `2π / ROTATION_PERIOD` radians per second
+- At `t=0`, `lon=0°` is at local noon
+- Returns `nothing` when sun below horizon (cos(zenith) ≤ 0)
+
+### Solar Flux Calculation
+
+```julia
+Q_in = S₀ × cos(zenith) × (1 - α) × τ_solar
+```
+
+**Parameters:**
+- `S₀ = 2100 W/m²` — Solar constant (1.54× Earth)
+- `α` — Surface albedo (ice-albedo feedback)
+- `τ_solar = exp(-0.25 / (cos(zenith) + 0.01))` — Atmospheric transmission
+
+<Note>
+The `+0.01` prevents division by zero at the horizon (zenith = 90°).
+</Note>
+
+### Eclipse Handling
+
+The moon passes behind its planet every 64 hours:
+
+```julia
+orbital_phase = (t % ORBITAL_PERIOD) / ORBITAL_PERIOD
+eclipse_half_width = ECLIPSE_DURATION / ORBITAL_PERIOD / 2
+
+is_eclipsed = abs(orbital_phase - 0.5) < eclipse_half_width
+```
+
+**Constants:**
+- `ORBITAL_PERIOD = 64 hours = 230,400 seconds`
+- `ECLIPSE_DURATION = 4 hours = 14,400 seconds`
+- Eclipse occurs at orbital phase = 0.5 ± 0.03125
+
+When eclipsed, `Q_in = 0` globally.
+
+## Outgoing Radiation (Q_out)
+
+### Stefan-Boltzmann Law with Greenhouse
+
+The surface emits thermal radiation, modulated by atmospheric opacity:
+
+```julia
+Q_out = ε × σ × T⁴ × transmissivity
+```
+
+**Parameters:**
+- `ε = 0.95` — Surface emissivity
+- `σ = 5.67×10⁻⁸ W·m⁻²·K⁻⁴` — Stefan-Boltzmann constant
+- `transmissivity = 2 / (2 + τ_IR)` — Eddington approximation
+
+### Infrared Optical Depth
+
+The total IR optical depth combines permanent gases and water vapor:
+
+```julia
+τ_IR = τ_base + τ_water_vapor
+```
+
+<Tabs>
+  <Tab title="Dry Atmosphere (1D, 2D temp-only)">
+    ```julia
+    τ_IR = BASE_IR_OPTICAL_DEPTH  # = 1.0
+    ```
+    
+    Fixed greenhouse effect from permanent gases (CO₂, etc.).
+  </Tab>
+  
+  <Tab title="Moisture Coupling">
+    ```julia
+    τ_water = WV_OPTICAL_SCALE × log(1 + M / WV_REF_MOISTURE)
+    τ_IR = BASE_IR_OPTICAL_DEPTH + τ_water
+    ```
+    
+    **Parameters:**
+    - `WV_OPTICAL_SCALE = 0.8` — Logarithmic scaling
+    - `WV_REF_MOISTURE = 5.0 kg/m²` — Reference column moisture
+    - `BASE_IR_OPTICAL_DEPTH = 1.0` — Background greenhouse
+    
+    **Behavior:**
+    - At M = 0: τ_IR = 1.0 (baseline)
+    - At M = 5 kg/m²: τ_IR = 1.55
+    - At M = 20 kg/m²: τ_IR = 2.19
+    - Diminishing returns prevent runaway greenhouse
+  </Tab>
+  
+  <Tab title="Elevation Effect">
+    ```julia
+    τ_effective = τ_IR × (1 - ELEVATION_GREENHOUSE_REDUCTION × max(0, elevation))
+    ```
+    
+    **Parameter:**
+    - `ELEVATION_GREENHOUSE_REDUCTION = 0.5`
+    
+    Mountains experience weaker greenhouse (thinner atmosphere above).
+    
+    **Example:** At elevation = 1.0 (highest), τ reduces by 50%.
+  </Tab>
+</Tabs>
+
+### Eddington Approximation
+
+The transmissivity formula approximates two-stream radiative transfer:
+
+```julia
+transmissivity = 2 / (2 + τ_IR)
+```
+
+| τ_IR | Transmissivity | Interpretation |
+|------|----------------|----------------|
+| 0    | 1.00           | Transparent atmosphere |
+| 1.0  | 0.67           | Earth-like |
+| 2.0  | 0.50           | Strong greenhouse |
+| 10.0 | 0.17           | Venus-like |
+
+**Physical meaning:** Fraction of surface IR escaping to space. Lower values trap more heat.
+
+## Ice-Albedo Feedback
+
+Surface albedo varies smoothly with temperature:
+
+```julia
+ice_fraction = 0.5 × (1 - tanh((T - 273.15) / 10.0))
+albedo = BASE_ALBEDO × (1 - ice_fraction) + ICE_ALBEDO × ice_fraction
+```
+
+**Parameters:**
+- `BASE_ALBEDO = 0.28` — Warm surface (rock/soil)
+- `ICE_ALBEDO = 0.60` — Frozen surface
+- `FREEZING_POINT = 273.15 K` — Transition center
+- `ICE_TRANSITION_WIDTH = 10 K` — Transition steepness
+
+**Behavior:**
+
+| Temperature | Ice Fraction | Albedo |
+|-------------|--------------|--------|
+| 250 K       | 0.92         | 0.57   |
+| 263 K       | 0.73         | 0.51   |
+| 273 K       | 0.50         | 0.44   |
+| 283 K       | 0.27         | 0.37   |
+| 300 K       | 0.06         | 0.30   |
+
+<Note>
+The smooth tanh transition prevents numerical instabilities from discontinuous albedo jumps.
+</Note>
+
+## Heat Transport
+
+### Transport Coefficient
+
+Heat diffusion combines conduction and convection:
+
+```julia
+k(T_avg) = k_base + k_convection × activation(T_avg)
+
+activation(T) = 0.5 × (1 + tanh((T - T_threshold) / T_width))
+```
+
+**Parameters:**
+- `k_base = 15 W·m⁻²·K⁻¹` — Always active (conduction)
+- `k_convection = 30 W·m⁻²·K⁻¹` — Temperature-dependent (convection)
+- `T_threshold = 270 K` — Convection onset
+- `T_width = 20 K` — Activation steepness
+
+**Behavior:**
+
+| T_avg | Activation | Total k (W·m⁻²·K⁻¹) |
+|-------|------------|---------------------|
+| 240 K | 0.03       | 16                  |
+| 260 K | 0.18       | 20                  |
+| 270 K | 0.50       | 30                  |
+| 280 K | 0.82       | 40                  |
+| 300 K | 0.97       | 44                  |
+
+### 1D Transport (Latitude)
+
+```julia
+Q_transport[i] = Σ k(T_avg) × (T_neighbor - T_self)
+```
+
+Each latitude band exchanges heat with adjacent bands (north/south neighbors only).
+
+### 2D Transport (Terrain-Aware)
+
+```julia
+Q_transport[i,j] = Σ k(T_avg) × coeff[i,j,dir] × (T_neighbor - T_self)
+                   neighbors
+```
+
+Where `coeff[i,j,dir]` encodes:
+- **Slope barriers:** Mountains block transport
+- **Downhill preference:** Heat flows downslope more easily
+- **Ocean currents:** Ocean cells have 1.5× transport bonus
+
+**Directional coefficient formula:**
+
+```julia
+Δelev = elev_neighbor - elev_self
+barrier = 1 / (1 + 4.0 × Δelev²)
+asymmetry = 1 - 0.4 × tanh(Δelev × 3.0)
+coeff = barrier × asymmetry × ocean_multiplier
+```
+
+<Tabs>
+  <Tab title="Flat terrain">
+    Δelev = 0 → barrier = 1.0, asymmetry = 1.0 → **coeff = 1.0**
+    
+    Full transport in all directions.
+  </Tab>
+  
+  <Tab title="Uphill (neighbor higher)">
+    Δelev = +0.5 → barrier = 0.5, asymmetry = 0.83 → **coeff ≈ 0.42**
+    
+    Reduced transport climbing mountains.
+  </Tab>
+  
+  <Tab title="Downhill (neighbor lower)">
+    Δelev = -0.5 → barrier = 0.5, asymmetry = 1.17 → **coeff ≈ 0.59**
+    
+    Enhanced transport flowing downhill.
+  </Tab>
+  
+  <Tab title="Ocean cell">
+    Ocean multiplier = 1.5 × coeff
+    
+    Ocean currents transport heat more efficiently than land.
+  </Tab>
+</Tabs>
+
+## Moisture Dynamics
+
+### Clausius-Clapeyron Saturation
+
+Saturation moisture capacity increases exponentially with temperature:
+
+```julia
+M_sat(T) = M_ref × exp(α × (T - T_ref) / T_ref)
+```
+
+**Parameters:**
+- `M_ref = 5.0 kg/m²` — Saturation at 273.15 K
+- `T_ref = 273.15 K` — Reference temperature
+- `α = 17.0` — Clausius-Clapeyron scale
+
+**Behavior:**
+
+| Temperature | M_sat (kg/m²) |
+|-------------|---------------|
+| 250 K       | 0.59          |
+| 263 K       | 1.98          |
+| 273 K       | 5.00          |
+| 283 K       | 11.9          |
+| 293 K       | 27.1          |
+| 303 K       | 59.9          |
+
+### Ocean Evaporation
+
+Only ocean cells (elevation < 0) contribute moisture:
+
+```julia
+if elevation < 0 and T > T_evap:
+    evaporation = k_evap × (T - T_evap)  # kg·m⁻²·s⁻¹
+else:
+    evaporation = 0
+```
+
+**Parameters:**
+- `k_evap = 3×10⁻⁶ kg·m⁻²·s⁻¹·K⁻¹`
+- `T_evap = 273.15 K` — Evaporation threshold
+
+**Example:** At T = 293 K (20°C), evaporation = 6×10⁻⁵ kg·m⁻²·s⁻¹ = 0.22 kg·m⁻²·hr⁻¹
+
+### Orographic Precipitation
+
+Cooling at altitude triggers condensation:
+
+```julia
+T_altitude = T_surface - lapse_rate × elevation × scale
+M_sat_altitude = M_sat(T_altitude)
+
+if M > M_sat_altitude:
+    precipitation = k_precip × (M - M_sat_altitude)
+else:
+    precipitation = 0
+```
+
+**Parameters:**
+- `lapse_rate = 6.5×10⁻³ K/m` — Adiabatic cooling rate
+- `elevation_scale = 5000 m` — Scaling factor (elevation ∈ [-1, 1])
+- `k_precip = 0.002 s⁻¹` — Precipitation rate
+
+**Example:** Mountain at elevation = 0.5 (2500 m above reference):
+- Surface T = 290 K → T_altitude = 273.75 K
+- M_sat drops from 21.4 to 5.6 kg/m²
+- Excess moisture precipitates out at ~2% per second
+
+### Moisture Transport
+
+Moisture diffuses between cells with terrain barriers:
+
+```julia
+dM/dt = evap - precip + Σ k_moisture × coeff_moisture[i,j,dir] × (M_neighbor - M_self)
+```
+
+**Parameters:**
+- `k_moisture = 7×10⁻⁵ s⁻¹` — Base diffusion coefficient
+- Moisture barriers: **2× stronger** than heat barriers (MOISTURE_BARRIER_STRENGTH = 8.0 vs 4.0)
+
+<Info>
+Mountains create **rain shadows**: Moisture precipitates on windward slopes, leaving leeward sides dry.
+</Info>
+
+## Latent Heat
+
+Phase changes couple moisture and temperature:
+
+```julia
+Q_latent = L × (precip - evap)
+```
+
+**Parameter:**
+- `L = 2.5×10⁶ J/kg` — Latent heat of vaporization
+
+**Sign convention:**
+- Precipitation > evaporation: **Q_latent > 0** (releases heat)
+- Evaporation > precipitation: **Q_latent < 0** (cools surface)
+
+**Example:** Precipitation of 10⁻⁵ kg·m⁻²·s⁻¹ releases 25 W/m² of heat.
+
+## Heat Capacity
+
+### Latitude-Based (1D)
+
+```julia
+if |lat| < 30°:  C = 1.0×10⁶ J·m⁻²·K⁻¹  # Equatorial (desert-like)
+elif |lat| < 70°: C = 4.0×10⁶           # Mid-latitude
+else:            C = 1.0×10⁷           # Polar (ice-like)
+```
+
+### Biome-Based (2D with Moisture)
+
+Heat capacity is smoothly blended across 12 biome types:
+
+| Biome | Heat Capacity (J·m⁻²·K⁻¹) | Conditions |
+|-------|---------------------------|------------|
+| Ocean | 2.0×10⁷ | elevation < 0 |
+| Ice Sheet | 1.5×10⁷ | T < -10°C |
+| Tropical Forest | 8.0×10⁶ | T > 20°C, M > 5 kg/m² |
+| Temperate Forest | 6.0×10⁶ | 10-20°C, M > 4 kg/m² |
+| Grassland | 4.0×10⁶ | 10-20°C, M < 4 kg/m² |
+| Hot Desert | 5.0×10⁵ | T > 20°C, M < 2 kg/m² |
+| Mountain | 3.0×10⁵ | elevation > 0.5 |
+| Wetland | 1.2×10⁷ | 0 < elevation < 0.1 |
+
+**Blending formula:**
+
+```julia
+C = Σ weight_biome[i] × C_biome[i]
+```
+
+Where weights are computed using smooth tanh transitions (see src/physics/biomes.jl:180-201).
+
+<Note>
+**Physical interpretation:** Higher heat capacity = slower temperature changes. Oceans are ~40× less responsive than mountains.
+</Note>
+
+## Summary: Complete ODE System
+
+Combining all components:
+
+```julia
+# For each grid cell (i, j):
+Q_in = solar_flux(t, lat, lon, T, albedo(T))
+Q_out = ε × σ × T⁴ × transmissivity(τ_IR(M, elevation))
+Q_transport = Σ k(T_avg) × coeff × (T_neighbor - T)
+Q_latent = L × (precip(M, T, elev) - evap(T, elev))
+C = heat_capacity(T, M, elevation)
+
+dT/dt = (Q_in - Q_out + Q_transport + Q_latent) / C
+
+# If moisture tracking enabled:
+dM/dt = evap - precip + Σ k_moisture × coeff_moisture × (M_neighbor - M)
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Orbital Mechanics" icon="satellite-dish" href="/concepts/orbital-mechanics">
+    28-hour rotation, 64-hour orbit, eclipse timing
+  </Card>
+  
+  <Card title="Simulation Modes" icon="sliders" href="/concepts/simulation-modes">
+    Choosing between 1D, 2D, moisture, and two-layer variants
+  </Card>
+</CardGroup>

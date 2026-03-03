@@ -1,0 +1,170 @@
+---
+title: Radiative Transfer
+description: Solar absorption, albedo feedbacks, and infrared emission in the Hot Moon climate model
+---
+
+## Overview
+
+The radiative transfer module implements energy balance physics for incoming solar radiation and outgoing longwave radiation. Key features include:
+
+- Ice-albedo feedback with smooth transitions
+- Greenhouse effect with water vapor coupling
+- Elevation-dependent atmospheric opacity
+- Eclipse handling during orbital transit
+
+## Solar Absorption
+
+### Incoming Solar Flux
+
+The Hot Moon receives intense stellar radiation:
+
+```julia
+SOLAR_CONSTANT = 2100.0  # W/m² (1.54× Earth)
+```
+
+Incoming flux depends on solar geometry (see [Solar Geometry](/api/solar-geometry)):
+
+$$
+Q_{\text{in}} = S_0 \cdot (1 - \tau_{\text{solar}}) \cdot \cos(\theta_z) \cdot (1 - \alpha)
+$$
+
+where:
+- $S_0$ = solar constant (2100 W/m²)
+- $\tau_{\text{solar}}$ = atmospheric solar optical depth (0.25)
+- $\theta_z$ = solar zenith angle
+- $\alpha$ = surface albedo (temperature-dependent)
+
+### Albedo and Ice-Albedo Feedback
+
+Surface albedo varies with temperature through ice coverage:
+
+**Ice Fraction Calculation** (`compute_ice_fraction_from_temperature`):
+
+$$
+f_{\text{ice}} = \frac{1}{2}\left(1 - \tanh\left(\frac{T - T_f}{w_{\text{ice}}}\right)\right)
+$$
+
+**Surface Albedo** (`compute_surface_albedo`):
+
+$$
+\alpha(T) = \alpha_{\text{base}} \cdot (1 - f_{\text{ice}}) + \alpha_{\text{ice}} \cdot f_{\text{ice}}
+$$
+
+<Note>
+The `tanh` transition ensures numerical stability and smooth derivatives for ODE solvers. The ice fraction transitions smoothly around the freezing point rather than having a discontinuous jump.
+</Note>
+
+**Parameter Values**:
+
+| Parameter | Symbol | Value | Unit |
+|-----------|--------|-------|------|
+| Base albedo | $\alpha_{\text{base}}$ | 0.28 | - |
+| Ice albedo | $\alpha_{\text{ice}}$ | 0.60 | - |
+| Freezing point | $T_f$ | 273.15 | K |
+| Ice transition width | $w_{\text{ice}}$ | 10.0 | K |
+| Solar optical depth | $\tau_{\text{solar}}$ | 0.25 | - |
+
+**Example**: At 263 K (-10°C):
+- Ice fraction: ~0.84 (mostly frozen)
+- Albedo: ~0.55 (highly reflective)
+
+## Greenhouse Effect
+
+### Infrared Optical Depth
+
+The atmosphere absorbs outgoing longwave radiation based on total optical depth:
+
+**Base Optical Depth** (`BASE_IR_OPTICAL_DEPTH`):
+
+```julia
+τ_base = 1.0  # Permanent gases (CO₂, etc.)
+```
+
+**Water Vapor Contribution** (`compute_water_vapor_optical_depth`):
+
+$$
+\tau_{\text{wv}} = \tau_{\text{scale}} \cdot \ln\left(1 + \frac{M}{M_{\text{ref}}}\right)
+$$
+
+where:
+- $\tau_{\text{scale}}$ = 0.8 (water vapor optical scale)
+- $M$ = column moisture (kg/m²)
+- $M_{\text{ref}}$ = 5.0 kg/m² (reference moisture)
+
+<Note>
+Logarithmic scaling represents diminishing returns: doubling moisture doesn't double the greenhouse effect. This matches real atmospheric radiative transfer where absorption lines saturate.
+</Note>
+
+**Total Optical Depth** (`compute_total_ir_optical_depth`):
+
+$$
+\tau_{\text{total}} = \tau_{\text{base}} + \tau_{\text{wv}}(M)
+$$
+
+**Elevation Adjustment** (`compute_effective_optical_depth_at_elevation`):
+
+High-altitude locations have thinner atmospheres above them:
+
+$$
+\tau_{\text{eff}}(z) = \tau_{\text{total}} \cdot \left(1 - \gamma_{\text{elev}} \cdot \max(0, z)\right)
+$$
+
+where $\gamma_{\text{elev}} = 0.5$ (elevation greenhouse reduction factor).
+
+### Transmissivity and Outgoing Radiation
+
+**Eddington Approximation** (`compute_ir_transmissivity_from_optical_depth`):
+
+$$
+t_{\text{IR}} = \frac{2}{2 + \tau}
+$$
+
+This approximation balances simplicity with physical realism:
+- $\tau = 0$: $t = 1.0$ (transparent, no greenhouse effect)
+- $\tau = 1$: $t = 0.67$ (moderate absorption)
+- $\tau = 2$: $t = 0.5$ (strong greenhouse effect)
+- $\tau \to \infty$: $t \to 0$ (opaque)
+
+**Outgoing Longwave Radiation** (`compute_outgoing_longwave_radiation`):
+
+$$
+Q_{\text{out}} = \varepsilon \cdot \sigma \cdot T^4 \cdot t_{\text{IR}}
+$$
+
+where:
+- $\varepsilon$ = 0.95 (surface emissivity)
+- $\sigma$ = 5.67×10⁻⁸ W·m⁻²·K⁻⁴ (Stefan-Boltzmann constant)
+- $T$ = surface temperature (K)
+- $t_{\text{IR}}$ = infrared transmissivity
+
+## Radiative Parameters
+
+| Constant | Value | Unit | Description |
+|----------|-------|------|-------------|
+| `STEFAN_BOLTZMANN` | 5.67×10⁻⁸ | W·m⁻²·K⁻⁴ | Stefan-Boltzmann constant |
+| `SOLAR_CONSTANT` | 2100.0 | W/m² | Incident stellar flux |
+| `EMISSIVITY` | 0.95 | - | Surface infrared emissivity |
+| `BASE_IR_OPTICAL_DEPTH` | 1.0 | - | Optical depth from permanent gases |
+| `WV_OPTICAL_SCALE` | 0.8 | - | Water vapor optical depth coefficient |
+| `WV_REF_MOISTURE` | 5.0 | kg/m² | Reference moisture for optical depth |
+| `ELEVATION_GREENHOUSE_REDUCTION` | 0.5 | - | Greenhouse reduction per unit elevation |
+| `SOLAR_OPTICAL_DEPTH` | 0.25 | - | Atmospheric absorption of solar radiation |
+
+## Implementation Details
+
+All radiative functions use `@inline` and `@fastmath` macros for performance:
+
+```julia
+@inline @fastmath function compute_ice_fraction_from_temperature(T::Real)
+    x = (T - FREEZING_POINT) / ICE_TRANSITION_WIDTH
+    return 0.5 * (1 - tanh(x))
+end
+```
+
+**Source Code**: `src/physics/radiative.jl:11-14`
+
+## Related Pages
+
+- [Heat Transport](/physics/heat-transport) - How radiative imbalances drive heat flow
+- [Moisture Dynamics](/physics/moisture-dynamics) - Water vapor's role in greenhouse effect
+- [Solar Geometry](/api/solar-geometry) - Solar zenith angles and eclipse detection

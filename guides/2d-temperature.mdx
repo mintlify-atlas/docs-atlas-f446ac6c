@@ -1,0 +1,310 @@
+---
+title: '2D Temperature-Only Simulations'
+description: 'How to run 2D climate simulations with terrain on a lat-lon grid'
+---
+
+2D temperature-only simulations add spatial resolution and terrain to the climate model. Each grid cell has its own temperature, elevation, and albedo. This enables realistic features like ocean currents, mountain rain shadows, and continental/maritime climate differences.
+
+## What's Included
+
+<Info>
+  **2D Temperature simulations include:**
+  - Full latitude-longitude grid
+  - Procedural terrain generation (oceans, continents, mountains)
+  - Terrain-modified heat transport (oceans conduct heat faster, mountains block flow)
+  - Elevation-dependent lapse rate (mountains are colder)
+  - Ice-albedo feedback (cold regions reflect more sunlight)
+  - Day/night cycle with solar geometry
+  - Eclipse events
+
+  **Not included** (see [moisture-coupling guide](/guides/moisture-coupling)):
+  - Precipitation and evaporation
+  - Biome classification
+  - Atmospheric moisture transport
+</Info>
+
+## Basic 2D Simulation
+
+<Steps>
+  <Step title="Create the 2D moon">
+    Initialize a `MoonBody2D` with grid resolution and terrain parameters:
+
+    ```julia
+    using HotMoon
+    
+    moon = HotMoonBody(
+        90,    # n_lat: latitude bands
+        180,   # n_lon: longitude cells
+        seed=32,
+        sea_level=0.0,
+        scale=0.01,
+        octaves=5
+    )
+    
+    println(moon)
+    # Output: MoonBody2D(90 lat × 180 lon)
+    println("Total cells: $(moon.n_lat * moon.n_lon)")
+    ```
+
+    See [terrain generation guide](/guides/terrain-generation) for parameter details.
+  </Step>
+
+  <Step title="Set initial conditions">
+    Create a uniform temperature field across the 2D grid:
+
+    ```julia
+    T0 = fill(285.0, moon.n_lat, moon.n_lon)  # 285K = 12°C
+    println("Initial temperature: $(T0[1,1] - 273.15)°C (uniform)")
+    ```
+
+    The temperature array is `[lat, lon]` indexed.
+  </Step>
+
+  <Step title="Run the simulation">
+    Execute with progress tracking:
+
+    ```julia
+    sim_hours = 10000.0
+    println("\nRunning simulation for $(round(Int, sim_hours)) hours...")
+    progress = make_progress_callback(sim_hours, update_interval_hours=250)
+    @time sol = run_simulation(moon, sim_hours, T0, callback=progress)
+    ```
+
+    <Tip>
+      Use multithreading for faster 2D simulations: `julia -t 4 scripts/run_2d.jl`
+    </Tip>
+  </Step>
+
+  <Step title="Analyze results">
+    Extract and reshape the final temperature field:
+
+    ```julia
+    T_final = reshape(sol.u[end], moon.n_lat, moon.n_lon)
+    T_final_C = T_final .- 273.15
+    
+    global_mean = sum(T_final_C .* moon.cell_areas)
+    global_min = minimum(T_final_C)
+    global_max = maximum(T_final_C)
+    
+    println("\nGlobal statistics:")
+    println("  Mean temperature: $(round(global_mean, digits=1))°C")
+    println("  Min temperature:  $(round(global_min, digits=1))°C")
+    println("  Max temperature:  $(round(global_max, digits=1))°C")
+    ```
+
+    The ODE solver flattens the 2D grid into a 1D state vector, so use `reshape` to recover spatial structure.
+  </Step>
+
+  <Step title="Find temperature extremes">
+    Locate the hottest and coldest points:
+
+    ```julia
+    max_idx = argmax(T_final_C)
+    min_idx = argmin(T_final_C)
+    
+    hot_lat = moon.latitudes[max_idx[1]]
+    hot_lon = moon.longitudes[max_idx[2]]
+    cold_lat = moon.latitudes[min_idx[1]]
+    cold_lon = moon.longitudes[min_idx[2]]
+    
+    println("\nExtremes:")
+    println("  Hottest: $(round(global_max, digits=1))°C at lat=$(round(hot_lat, digits=1))°, lon=$(round(hot_lon, digits=1))°")
+    println("  Coldest: $(round(global_min, digits=1))°C at lat=$(round(cold_lat, digits=1))°, lon=$(round(cold_lon, digits=1))°")
+    ```
+  </Step>
+
+  <Step title="Save outputs">
+    Generate plots and animations:
+
+    ```julia
+    config = RunConfig("2d")
+    ctx = initialize_run(config)
+    save_results!(ctx, sol, moon, T0=T0)
+    generate_plots!(ctx, sol, moon)
+    generate_animations!(ctx, sol, moon, hours=448, frame_skip=4, fps=10)
+    finalize_run!(ctx)
+    ```
+
+    Results are saved to `output/latest/`.
+  </Step>
+</Steps>
+
+## Complete Example Script
+
+```julia
+using Pkg
+Pkg.activate(".")
+
+using Statistics
+
+include("src/HotMoon.jl")
+using .HotMoon
+
+println("="^60)
+println("Hot Moon 2D Climate Simulation")
+println("="^60)
+
+println("\nCreating moon...")
+moon = HotMoonBody(90, 180, seed=32, sea_level=0.0, scale=0.01, octaves=5)
+println(moon)
+println("  Total cells: $(moon.n_lat * moon.n_lon)")
+
+T0 = fill(285.0, moon.n_lat, moon.n_lon)
+println("Initial temperature: $(T0[1,1] - 273.15)°C (uniform)")
+
+sim_hours = 10000.0
+println("\nRunning simulation for $(round(Int, sim_hours)) hours...")
+progress = make_progress_callback(sim_hours, update_interval_hours=250)
+@time sol = run_simulation(moon, sim_hours, T0, callback=progress)
+println()
+
+println("\nSimulation complete!")
+println("  Number of timesteps: $(length(sol.t))")
+println("  Final time: $(sol.t[end]/3600) hours")
+
+T_final = reshape(sol.u[end], moon.n_lat, moon.n_lon)
+T_final_C = T_final .- 273.15
+
+global_mean = sum(T_final_C .* moon.cell_areas)
+global_min = minimum(T_final_C)
+global_max = maximum(T_final_C)
+
+println("\n" * "="^60)
+println("GLOBAL STATISTICS")
+println("="^60)
+println("  Mean temperature: $(round(global_mean, digits=1))°C")
+println("  Min temperature:  $(round(global_min, digits=1))°C")
+println("  Max temperature:  $(round(global_max, digits=1))°C")
+
+max_idx = argmax(T_final_C)
+min_idx = argmin(T_final_C)
+hot_lat = moon.latitudes[max_idx[1]]
+hot_lon = moon.longitudes[max_idx[2]]
+cold_lat = moon.latitudes[min_idx[1]]
+cold_lon = moon.longitudes[min_idx[2]]
+
+println("\n" * "="^60)
+println("EXTREMES")
+println("="^60)
+println("  Hottest: $(round(global_max, digits=1))°C at lat=$(round(hot_lat, digits=1))°, lon=$(round(hot_lon, digits=1))°")
+println("  Coldest: $(round(global_min, digits=1))°C at lat=$(round(cold_lat, digits=1))°C at lat=$(round(cold_lat, digits=1))°, lon=$(round(cold_lon, digits=1))°")
+
+config = RunConfig("2d")
+ctx = initialize_run(config)
+save_results!(ctx, sol, moon, T0=T0)
+generate_plots!(ctx, sol, moon)
+generate_animations!(ctx, sol, moon, hours=448, frame_skip=4, fps=10)
+finalize_run!(ctx)
+```
+
+## Output Files
+
+The simulation generates these files in `output/latest/`:
+
+### Data Files
+- **solution.jls** - Serialized ODE solution
+- **moon.jls** - Moon configuration (includes terrain)
+- **README.md** - Run metadata
+
+### Plots
+- **temperature.png** - Final temperature snapshot
+- **temperature_global_mean_full.png** - Full timeseries
+- **temperature_global_mean_detail.png** - Last 800 hours detail
+- **temperature_hovmoeller_longitude.png** - Longitude-time diagram
+- **temperature_hovmoeller_latitude.png** - Latitude-time diagram
+- **temperature_latitude_range.png** - Mean ± range by latitude
+- **terrain.png** - Elevation map with coastlines
+
+### Animations
+- **temperature.gif** - Animated temperature evolution (last 448 hours)
+
+## Grid Resolution Trade-offs
+
+<Warning>
+  Runtime scales as `n_lat × n_lon`, so doubling resolution quadruples runtime.
+</Warning>
+
+| Resolution | Total Cells | Relative Runtime | Use Case |
+|------------|-------------|------------------|----------|
+| 45 × 90    | 4,050       | 1x               | Quick tests |
+| 90 × 180   | 16,200      | 4x               | Standard simulation |
+| 180 × 360  | 64,800      | 16x              | High resolution |
+| 360 × 720  | 259,200     | 64x              | Publication quality |
+
+<Tip>
+  Start with 90×180 for initial exploration. Use multithreading (`julia -t 8`) for larger grids.
+</Tip>
+
+## Understanding Terrain Effects
+
+### Ocean vs Land Heat Capacity
+
+Ocean cells (elevation < 0) have higher heat capacity:
+- **Ocean**: 2.0e7 J/(m²·K) - slow to heat/cool
+- **Land**: Varies by latitude, ~1-10e6 J/(m²·K)
+
+### Heat Transport Modifiers
+
+The simulator pre-computes directional transport coefficients:
+- **Ocean currents**: 1.5x transport bonus
+- **Mountains**: Reduced transport proportional to slope steepness
+- **Downslope flow**: Preferential heat flow downhill
+
+```julia
+# Inspect transport coefficients (direction: 1=N, 2=S, 3=E, 4=W)
+coeff_east = moon.transport_coeffs[:, :, 3]
+println("Eastward transport range: $(minimum(coeff_east)) to $(maximum(coeff_east))")
+```
+
+### Elevation Effects
+
+- **Lapse rate**: Temperature decreases 6.5 K/km with elevation
+- **Greenhouse reduction**: High-altitude cells have less atmospheric IR opacity
+
+## Common Patterns
+
+### Spatially-Varying Initial Conditions
+
+```julia
+# Hot equator, cold poles
+T0 = [310.0 - 60.0 * abs(lat/90.0) for lat in moon.latitudes, lon in moon.longitudes]
+```
+
+### Ocean Coverage Analysis
+
+```julia
+ocean_cells = sum(moon.elevation .< 0)
+ocean_pct = 100 * ocean_cells / (moon.n_lat * moon.n_lon)
+println("Ocean coverage: $(round(ocean_pct, digits=1))%")
+```
+
+### Extracting Coastal Cells
+
+```julia
+function is_coastal(i, j, elevation, n_lat, n_lon)
+    if elevation[i, j] >= 0
+        return false  # Must be ocean
+    end
+    
+    # Check neighbors for land
+    neighbors = [
+        (i > 1 && elevation[i-1, j] >= 0),
+        (i < n_lat && elevation[i+1, j] >= 0),
+        (elevation[i, mod1(j+1, n_lon)] >= 0),
+        (elevation[i, mod1(j-1, n_lon)] >= 0)
+    ]
+    
+    return any(neighbors)
+end
+
+coastal_count = sum(is_coastal(i, j, moon.elevation, moon.n_lat, moon.n_lon) 
+                    for i in 1:moon.n_lat for j in 1:moon.n_lon)
+println("Coastal cells: $coastal_count")
+```
+
+## Next Steps
+
+- Add moisture dynamics with [moisture-coupling guide](/guides/moisture-coupling)
+- Customize terrain with [terrain generation guide](/guides/terrain-generation)
+- Create custom visualizations with [visualization guide](/guides/visualization)
+- Optimize performance with [threading and resolution tips](/guides/performance)

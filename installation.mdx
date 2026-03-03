@@ -1,0 +1,208 @@
+---
+title: Installation
+description: Install Julia and set up Hot Moon Climate Simulator
+---
+
+# Installation
+
+Get started with Hot Moon Climate Simulator by installing Julia and the required dependencies.
+
+## Requirements
+
+Hot Moon requires:
+
+- **Julia 1.9 or later** - Download from [julialang.org](https://julialang.org/downloads/)
+- **4+ GB RAM** - For running 2D simulations
+- **Multi-core CPU recommended** - For faster 2D simulations with threading
+
+## Install Julia
+
+<Steps>
+  <Step title="Download Julia">
+    Download the appropriate installer for your platform from [julialang.org/downloads](https://julialang.org/downloads/).
+    
+    Choose the "Current stable release" (v1.9 or later).
+  </Step>
+  
+  <Step title="Install Julia">
+    Follow the platform-specific installation instructions:
+    
+    **macOS/Linux:**
+    ```bash
+    # Extract the archive
+    tar -xvzf julia-1.10.0-linux-x86_64.tar.gz
+    
+    # Add to PATH (add to ~/.bashrc or ~/.zshrc)
+    export PATH="$PATH:/path/to/julia-1.10.0/bin"
+    ```
+    
+    **Windows:**
+    
+    Run the installer and follow the setup wizard. Make sure to check "Add Julia to PATH" during installation.
+  </Step>
+  
+  <Step title="Verify installation">
+    Open a terminal and verify Julia is installed:
+    
+    ```bash
+    julia --version
+    ```
+    
+    You should see output like:
+    ```
+    julia version 1.10.0
+    ```
+  </Step>
+</Steps>
+
+## Install Hot Moon
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the Hot Moon repository to your local machine:
+    
+    ```bash
+    git clone https://github.com/yourusername/moon_simulation.git
+    cd moon_simulation
+    ```
+  </Step>
+  
+  <Step title="Install dependencies">
+    Install all required Julia packages using the project environment:
+    
+    ```bash
+    julia --project=. -e 'using Pkg; Pkg.instantiate()'
+    ```
+    
+    This will install:
+    - **DifferentialEquations.jl** - ODE solver for climate physics
+    - **Plots.jl** - Visualization and plotting
+    - **CoherentNoise.jl** - Fractal terrain generation
+    - **Colors.jl** - Color schemes for visualizations
+    - **ADTypes.jl** - Automatic differentiation support
+    - **Statistics.jl** - Statistical analysis
+    
+    <Note>
+      The first time you run this command, it may take several minutes to download and precompile all packages.
+    </Note>
+  </Step>
+  
+  <Step title="Verify installation">
+    Test that Hot Moon loads correctly:
+    
+    ```bash
+    julia --project=. -e 'include("src/HotMoon.jl"); using .HotMoon; println("✓ Hot Moon loaded successfully")'
+    ```
+    
+    You should see:
+    ```
+    ✓ Hot Moon loaded successfully
+    ```
+  </Step>
+</Steps>
+
+## Project structure
+
+Once installed, your Hot Moon directory will contain:
+
+```
+HotMoon/
+├── src/
+│   ├── HotMoon.jl          # Main module
+│   ├── types.jl            # MoonBody1D, MoonBody2D
+│   ├── constants.jl        # Physical parameters
+│   ├── geometry.jl         # Solar angles, eclipses
+│   ├── state.jl            # State vector utilities
+│   │
+│   ├── physics/
+│   │   ├── radiative.jl    # Albedo, greenhouse, IR
+│   │   ├── terrain.jl      # Fractal generation, transport
+│   │   ├── moisture.jl     # Evaporation, precipitation
+│   │   ├── biomes.jl       # Classification, heat capacity
+│   │   └── atmosphere.jl   # Two-layer dynamics
+│   │
+│   ├── solvers/
+│   │   ├── solver_1d.jl    # Latitude-band ODE
+│   │   └── solver_2d.jl    # Full 2D variants
+│   │
+│   └── visualization/
+│       ├── viz_1d.jl       # 1D plots
+│       ├── viz_2d_*.jl     # 2D snapshots, timeseries
+│       └── viz_animation.jl
+│
+├── scripts/
+│   ├── run_1d.jl           # Example: 1D simulation
+│   ├── run_2d.jl           # Example: 2D temperature
+│   └── run_2d_moisture.jl  # Example: Full moisture
+│
+├── output/
+│   └── runs/               # Timestamped results
+│
+├── Project.toml            # Package dependencies
+└── README.md
+```
+
+## Enable multithreading (optional)
+
+For faster 2D simulations, enable Julia's multithreading support:
+
+### Check available threads
+
+```bash
+julia --project=. -e 'println("Available threads: ", Threads.nthreads())'
+```
+
+### Set thread count
+
+**Temporary (current session only):**
+
+```bash
+julia --project=. -t 4 scripts/run_2d.jl
+```
+
+**Permanent (environment variable):**
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export JULIA_NUM_THREADS=4
+```
+
+<Tip>
+  For 2D simulations with 90×180 grids, using 4 threads can reduce simulation time by 3-4x.
+</Tip>
+
+## Troubleshooting
+
+### Package installation fails
+
+If `Pkg.instantiate()` fails with network errors, try:
+
+```bash
+julia --project=. -e 'using Pkg; Pkg.update(); Pkg.instantiate()'
+```
+
+### Out of memory errors
+
+For large 2D simulations, reduce grid resolution:
+
+```julia
+# Instead of 90×180
+moon = HotMoonBody(90, 180)
+
+# Try 45×90
+moon = HotMoonBody(45, 90)
+```
+
+### Slow compilation
+
+Julia precompiles packages on first use. Subsequent runs will be much faster. To force precompilation:
+
+```bash
+julia --project=. -e 'using Pkg; Pkg.precompile()'
+```
+
+## Next steps
+
+<Card title="Quick start tutorial" icon="rocket" href="/quickstart">
+  Run your first 1D climate simulation
+</Card>

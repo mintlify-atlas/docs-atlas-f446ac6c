@@ -1,0 +1,339 @@
+---
+title: Framework Architecture
+description: Module structure, multiple dispatch pattern, and design philosophy
+---
+
+## Overview
+
+Hot Moon Climate Simulator uses Julia's **multiple dispatch** system to provide a unified interface for 1D and 2D climate models. The framework is designed for scientific experimentation, balancing performance with code clarity.
+
+## Core Design Pattern
+
+The framework uses an abstract type hierarchy that enables compile-time specialization:
+
+```julia
+AbstractMoonBody
+├── MoonBody1D    # Latitude bands only
+└── MoonBody2D    # Full lat/lon grid with terrain
+```
+
+### Unified Constructor
+
+The `HotMoonBody` convenience function automatically selects the appropriate type:
+
+```julia
+# Create 1D model
+moon = HotMoonBody(18)           # MoonBody1D with 18 latitude bands
+
+# Create 2D model
+moon = HotMoonBody(90, 180)      # MoonBody2D with 90×180 grid
+```
+
+### Multiple Dispatch in Action
+
+The same `run_simulation` function works for both types:
+
+```julia
+# 1D simulation
+sol = run_simulation(moon_1d, 500, T0_1d)
+
+# 2D simulation
+sol = run_simulation(moon_2d, 5000, T0_2d)
+```
+
+Julia automatically calls the correct implementation based on the moon type, with zero runtime overhead.
+
+## Module Structure
+
+```
+HotMoon.jl
+├── types.jl              # Data structures
+├── constants.jl          # Physical parameters
+├── geometry.jl           # Solar geometry & eclipses
+├── state.jl              # State vector utilities
+├── grid_iteration.jl     # Parallel iteration helpers
+├── performance.jl        # Threading controls
+│
+├── physics/
+│   ├── radiative.jl      # Albedo, greenhouse effect
+│   ├── terrain.jl        # Elevation & transport
+│   ├── moisture.jl       # Evaporation & precipitation
+│   ├── biomes.jl         # Classification & heat capacity
+│   └── initial_state.jl  # Initialization helpers
+│
+├── solvers/
+│   ├── solver_1d.jl      # 1D ODE system
+│   └── solver_2d.jl      # 2D variants (temp-only, moisture, two-layer)
+│
+├── visualization/
+│   ├── viz_1d.jl         # 1D plots
+│   ├── viz_2d_*.jl       # 2D snapshots & timeseries
+│   └── viz_animation.jl  # Animations
+│
+└── output.jl             # Result saving & loading
+```
+
+## Type Definitions
+
+### MoonBody1D
+
+Simplified model with only latitude variation:
+
+```julia
+struct MoonBody1D <: AbstractMoonBody
+    n_lat::Int                        # Number of latitude bands
+    latitudes::Vector{Float64}        # Band centers (degrees)
+    cell_areas::Vector{Float64}       # Cosine-weighted areas
+    _transport_cache::Vector{Float64} # Pre-allocated buffer
+end
+```
+
+**Key characteristics:**
+- Latitude spacing: `90° / n_lat`
+- Latitude centers: `(i + 0.5) × spacing` for i ∈ [0, n_lat-1]
+- Area weights: `cos(lat)`, normalized to sum to 1
+- Typical resolution: 18 bands (~5° resolution)
+
+### MoonBody2D
+
+Full 2D grid with procedurally generated terrain:
+
+```julia
+struct MoonBody2D <: AbstractMoonBody
+    n_lat::Int                           # Latitude bands (pole to pole)
+    n_lon::Int                           # Longitude cells
+    latitudes::Vector{Float64}           # Centers (degrees, -90° to +90°)
+    longitudes::Vector{Float64}          # Centers (degrees)
+    cell_areas::Matrix{Float64}          # Cosine-weighted areas
+    elevation::Matrix{Float64}           # Terrain (-1 to 1)
+    transport_coeffs::Array{Float64,3}   # Heat transport [lat,lon,dir]
+    moisture_transport_coeffs::Array{Float64,3}  # Moisture transport
+    _transport_cache::Vector{Float64}    # Heat transport buffer
+    _moisture_cache::Vector{Float64}     # Moisture transport buffer
+end
+```
+
+**Key characteristics:**
+- Latitude indexing: i=1 is South Pole, i=n_lat is North Pole
+- Longitude wrapping: periodic boundary with `mod1(j±1, n_lon)`
+- Elevation: < 0 is ocean, > 0 is land
+- Transport coefficients: Pre-computed at initialization
+- Direction encoding: 1=North, 2=South, 3=East, 4=West
+
+## State Vector Layout
+
+All simulations use flat 1D vectors for ODE solvers:
+
+<Tabs>
+  <Tab title="Temperature-only">
+    **State:** `[T₁₁, T₁₂, ..., T₁ₙ, T₂₁, ..., Tₘₙ]`
+    
+    - Size: `n_lat × n_lon`
+    - Indexing: `idx = (i-1) * n_lon + j`
+    - Used by: `run_simulation(moon, hours, T0)`
+  </Tab>
+  
+  <Tab title="Temperature + Moisture">
+    **State:** `[T₁₁, ..., Tₘₙ, M₁₁, ..., Mₘₙ]`
+    
+    - Size: `2 × n_lat × n_lon`
+    - Temperature: indices 1 to n_cells
+    - Moisture: indices (n_cells+1) to 2×n_cells
+    - Used by: `run_simulation_with_moisture(moon, hours, T0, M0)`
+  </Tab>
+  
+  <Tab title="Two-Layer Atmosphere">
+    **State:** `[T, M, U, M_up]` (four concatenated fields)
+    
+    - Size: `4 × n_lat × n_lon`
+    - T: Surface temperature
+    - M: Surface moisture
+    - U: Upper atmosphere mass
+    - M_up: Upper atmosphere moisture
+    - Used by: `run_simulation_with_twolayer_atmosphere(...)`
+  </Tab>
+</Tabs>
+
+### State Vector Utilities
+
+Helper functions for working with composite states:
+
+```julia
+# Unpack temperature-moisture state
+state = unpack_temperature_moisture_state(u, moon)
+T = state.T  # Reshaped to n_lat × n_lon
+M = state.M
+
+# Pack initial conditions
+u0 = pack_temperature_moisture_state(T0, M0)
+
+# Check state type
+is_temperature_only_state(u, moon)       # true if length = n_lat×n_lon
+is_temperature_moisture_state(u, moon)   # true if length = 2×n_lat×n_lon
+```
+
+## Performance Features
+
+### Pre-computed Transport Coefficients
+
+Terrain-dependent transport is calculated once at initialization:
+
+```julia
+moon = HotMoonBody(90, 180)
+# Automatically calls:
+# - populate_heat_transport_coefficients!()
+# - populate_moisture_transport_coefficients!()
+```
+
+This avoids recalculating elevation differences at every ODE step (thousands of times).
+
+### Threading Support
+
+```julia
+# Set threading mode
+set_threading(true)   # Enable (default if nthreads() > 1)
+set_threading(false)  # Disable for debugging
+
+get_threading_status()  # Check current state
+```
+
+Multithreading is applied to:
+- Heat/moisture transport accumulation
+- Per-cell physics calculations
+- Automatically disabled for small grids (< 100 cells)
+
+<Info>
+**Recommended:** Run 2D simulations with `julia -t 4` for 3-4× speedup.
+</Info>
+
+### Memory Efficiency
+
+Pre-allocated buffers avoid allocations in the ODE inner loop:
+
+```julia
+_transport_cache::Vector{Float64}  # Reused every timestep
+_moisture_cache::Vector{Float64}   # Reused every timestep
+```
+
+## Numerical Stability Patterns
+
+### Smooth Transitions (tanh)
+
+All feedback mechanisms use hyperbolic tangent for differentiability:
+
+```julia
+# Ice-albedo feedback
+ice_fraction = 0.5 * (1 - tanh((T - 273.15) / 10.0))
+
+# Convection activation
+activation = 0.5 * (1 + tanh((T - 270.0) / 20.0))
+
+# Biome blending
+weight = 0.5 * (1 - tanh((T - threshold) / width))
+```
+
+**Benefits:**
+- No discontinuities (avoids ODE solver issues)
+- Smooth gradients for adaptive timesteps
+- Physically reasonable transitions
+
+### Zenith Angle Handling
+
+```julia
+zenith = get_zenith(t, lat)
+if zenith === nothing  # Sun below horizon
+    Q_solar = 0.0
+else
+    Q_solar = SOLAR_CONSTANT * cos(zenith) * ...
+end
+```
+
+<Note>
+**Important:** Always check for `nothing`, not `NaN`. The distinction enables safer arithmetic.
+</Note>
+
+### Longitude Wrapping
+
+Periodic boundaries for global continuity:
+
+```julia
+# East neighbor
+j_east = mod1(j + 1, n_lon)  # Wraps n_lon → 1
+
+# West neighbor  
+j_west = mod1(j - 1, n_lon)  # Wraps 1 → n_lon
+```
+
+## Time Units Convention
+
+| Context | Units | Example |
+|---------|-------|----------|
+| Internal calculations | Seconds | `ROTATION_PERIOD = 100800` |
+| User-facing API | Hours | `run_simulation(moon, 5000, T0)` |
+| Save interval | 30 minutes | `saveat=1800.0` |
+| Progress callbacks | Hours | `update_interval_hours=100` |
+
+**Conversion:**
+```julia
+tspan = (0.0, hours * 3600)  # Convert hours → seconds
+```
+
+## Extensibility Points
+
+The architecture supports customization at multiple levels:
+
+### Custom Physics Functions
+
+All physics functions are standalone and can be replaced:
+
+```julia
+# Default implementation
+function compute_surface_albedo(T::Real)
+    ice_frac = compute_ice_fraction_from_temperature(T)
+    return BASE_ALBEDO * (1 - ice_frac) + ICE_ALBEDO * ice_frac
+end
+
+# Custom albedo with vegetation
+function compute_surface_albedo(T::Real, vegetation::Real)
+    # Your implementation
+end
+```
+
+### Custom Terrain Generation
+
+```julia
+# Default uses fractal noise
+moon = HotMoonBody(90, 180, seed=42, sea_level=0.1)
+
+# Manual terrain
+moon = MoonBody2D(90, 180)
+moon.elevation .= your_terrain_function(moon.latitudes, moon.longitudes)
+populate_heat_transport_coefficients!(moon.transport_coeffs, moon.elevation, 90, 180)
+```
+
+### Custom ODE Solvers
+
+DifferentialEquations.jl provides dozens of solvers:
+
+```julia
+# Default: Tsit5 (Tsitouras 5/4 Runge-Kutta)
+sol = solve(prob, Tsit5())
+
+# Stiff problems
+sol = solve(prob, Rodas5())
+
+# High precision
+sol = solve(prob, Vern9(), abstol=1e-12)
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Physics Model" icon="atom" href="/concepts/physics-model">
+    Energy balance equations and climate feedbacks
+  </Card>
+  
+  <Card title="Simulation Modes" icon="sliders" href="/concepts/simulation-modes">
+    1D, 2D, moisture, and two-layer atmosphere variants
+  </Card>
+</CardGroup>

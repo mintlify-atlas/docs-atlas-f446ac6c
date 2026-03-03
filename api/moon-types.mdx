@@ -1,0 +1,287 @@
+---
+title: 'Moon Types'
+description: 'Type definitions for 1D and 2D moon body representations'
+---
+
+## Overview
+
+The Hot Moon Climate Simulator uses Julia's multiple dispatch pattern with an abstract type hierarchy. All moon bodies inherit from `AbstractMoonBody`, enabling unified simulation code that automatically selects the correct solver based on dimensionality.
+
+### Type Hierarchy
+
+```
+AbstractMoonBody (abstract)
+├── MoonBody1D (concrete)
+└── MoonBody2D (concrete)
+```
+
+The convenience constructor `HotMoonBody()` automatically returns the appropriate type based on the number of arguments provided.
+
+---
+
+## AbstractMoonBody
+
+```julia
+abstract type AbstractMoonBody end
+```
+
+Abstract supertype for all moon body representations. This enables multiple dispatch for simulation functions - you can write `run_simulation(moon, hours, T0)` and Julia will automatically call the correct implementation based on whether `moon` is `MoonBody1D` or `MoonBody2D`.
+
+### Usage
+
+You never instantiate `AbstractMoonBody` directly. Instead, create concrete types like `MoonBody1D` or `MoonBody2D`.
+
+---
+
+## MoonBody1D
+
+```julia
+struct MoonBody1D <: AbstractMoonBody
+```
+
+1D climate model with latitude bands (no longitude variation). Useful for quick simulations and understanding latitudinal patterns. This simplified model runs significantly faster than 2D while still capturing pole-to-equator temperature gradients.
+
+### Fields
+
+<ParamField path="n_lat" type="Int">
+  Number of latitude bands from equator to pole. The model represents one hemisphere (0° to 90°), so total bands cover the full moon from pole to pole.
+</ParamField>
+
+<ParamField path="latitudes" type="Vector{Float64}">
+  Center latitude of each band in degrees. Values range from near 0° (equator) to near 90° (pole).
+</ParamField>
+
+<ParamField path="cell_areas" type="Vector{Float64}">
+  Normalized area weights for each latitude band. Uses cosine-weighting to account for decreasing cell area toward poles. Sum equals 1.0.
+</ParamField>
+
+<ParamField path="_transport_cache" type="Vector{Float64}">
+  Pre-allocated buffer for the ODE solver. Internal use only - improves performance by avoiding repeated allocations during integration.
+</ParamField>
+
+### Constructor
+
+```julia
+MoonBody1D(n_lat=18)
+```
+
+Create a 1D moon with the specified number of latitude bands.
+
+<ParamField path="n_lat" type="Int" default="18">
+  Number of latitude bands from equator to pole. Higher values provide better spatial resolution but slower simulation. Typical values: 18 (fast), 36 (balanced), 90 (high resolution).
+</ParamField>
+
+### Examples
+
+```julia
+# Create a simple 18-band moon (default)
+moon = MoonBody1D()
+
+# High-resolution 1D simulation with 90 latitude bands
+moon = MoonBody1D(90)
+
+# Run simulation with uniform initial temperature
+T0 = fill(285.0, moon.n_lat)
+sol = run_simulation(moon, 10000.0, T0)
+
+# Access latitude information
+println(moon.latitudes[1])      # Equatorial latitude (≈2.5°)
+println(moon.latitudes[end])    # Polar latitude (≈87.5°)
+println(moon.cell_areas[1])     # Equatorial area weight (largest)
+println(moon.cell_areas[end])   # Polar area weight (smallest)
+```
+
+See `scripts/run_1d.jl:16` for production usage example.
+
+---
+
+## MoonBody2D
+
+```julia
+struct MoonBody2D <: AbstractMoonBody
+```
+
+2D climate model with latitude/longitude grid. Full spatial representation with procedurally-generated topography support. This model captures longitudinal variations, land-ocean contrasts, and terrain effects on heat and moisture transport.
+
+### Fields
+
+<ParamField path="n_lat" type="Int">
+  Number of latitude bands from pole to pole (-90° to +90°). Unlike `MoonBody1D`, this represents the full sphere.
+</ParamField>
+
+<ParamField path="n_lon" type="Int">
+  Number of longitude cells (0° to 360°). Longitude wraps periodically, so cell `n_lon + 1` equals cell `1`.
+</ParamField>
+
+<ParamField path="latitudes" type="Vector{Float64}">
+  Center latitude of each band in degrees. Values range from -90° (south pole) to +90° (north pole).
+</ParamField>
+
+<ParamField path="longitudes" type="Vector{Float64}">
+  Center longitude of each cell in degrees. Values range from 0° to just under 360°.
+</ParamField>
+
+<ParamField path="cell_areas" type="Matrix{Float64}">
+  Normalized area weights `[lat, lon]`. Uses cosine-weighting by latitude. Sum equals 1.0.
+</ParamField>
+
+<ParamField path="elevation" type="Matrix{Float64}">
+  Surface elevation in normalized units `[lat, lon]`. Generated using fractal noise. Values range from -1 (deep ocean) to +1 (mountain peaks). Sea level is typically around 0.
+</ParamField>
+
+<ParamField path="transport_coeffs" type="Array{Float64,3}">
+  Heat transport modifiers `[lat, lon, direction]` where direction is 1=North, 2=South, 3=East, 4=West. Terrain affects transport - mountains create barriers (reduced coefficients), lowlands allow easier flow (higher coefficients). Values typically 0.1 to 1.0.
+</ParamField>
+
+<ParamField path="_transport_cache" type="Vector{Float64}">
+  Pre-allocated buffer for the ODE solver. Internal use only.
+</ParamField>
+
+<ParamField path="moisture_transport_coeffs" type="Array{Float64,3}">
+  Moisture transport modifiers `[lat, lon, direction]`. Similar to heat transport but with stronger mountain barriers (`MOISTURE_BARRIER_STRENGTH = 8.0` vs heat's 4.0).
+</ParamField>
+
+<ParamField path="_moisture_cache" type="Vector{Float64}">
+  Pre-allocated buffer for moisture transport calculations. Internal use only.
+</ParamField>
+
+### Constructor
+
+```julia
+MoonBody2D(n_lat=18, n_lon=36; seed=42, sea_level=0.1, scale=0.02, octaves=3)
+```
+
+Create a 2D moon with the specified grid resolution. Generates terrain using fractal noise - elevation &lt; 0 is ocean, &gt; 0 is land.
+
+<ParamField path="n_lat" type="Int" default="18">
+  Number of latitude bands from pole to pole (-90° to +90°). Typical values: 18 (fast), 90 (balanced), 180 (high resolution).
+</ParamField>
+
+<ParamField path="n_lon" type="Int" default="36">
+  Number of longitude cells. Typically set to `2 × n_lat` for roughly square cells at the equator.
+</ParamField>
+
+<ParamField path="seed" type="Int" default="42">
+  Random seed for terrain generation. Use the same seed to reproduce identical terrain, or change it to generate different continents/oceans.
+</ParamField>
+
+<ParamField path="sea_level" type="Float64" default="0.1">
+  Controls ocean coverage. Higher values = more ocean, lower values = more land. Range typically -0.2 to 0.3. At 0.1, approximately 60-70% ocean coverage (Earth-like).
+</ParamField>
+
+<ParamField path="scale" type="Float64" default="0.02">
+  Noise scale parameter. Smaller values create larger landmasses, larger values create smaller, more fragmented continents. Range typically 0.01 to 0.05.
+</ParamField>
+
+<ParamField path="octaves" type="Int" default="3">
+  Number of fractal noise layers. More octaves = more terrain detail (mountains, valleys) but also more computation during initialization. Range typically 2 to 6.
+</ParamField>
+
+### Examples
+
+```julia
+# Create standard resolution moon with default terrain
+moon = MoonBody2D()
+
+# High-resolution moon with custom terrain
+moon = HotMoonBody(90, 180, 
+                   seed=32,           # Different terrain than default
+                   sea_level=0.0,     # ~50% ocean coverage
+                   scale=0.01,        # Large continents
+                   octaves=5)         # Detailed terrain
+
+# Run 2D simulation
+T0 = fill(285.0, moon.n_lat, moon.n_lon)
+sol = run_simulation(moon, 10000.0, T0)
+
+# Access grid properties
+println(moon.n_lat)                    # 90
+println(moon.n_lon)                    # 180
+println(size(moon.elevation))          # (90, 180)
+
+# Check if a cell is ocean or land
+is_ocean = moon.elevation[45, 90] < 0  # Cell at equator, 180° longitude
+
+# Get elevation at specific location
+elev = moon.elevation[60, 30]          # 30° north, 60° east
+println(elev > 0 ? "Land" : "Ocean")
+```
+
+See `scripts/run_2d.jl:18` for production usage example.
+
+---
+
+## HotMoonBody (Convenience Constructor)
+
+```julia
+HotMoonBody(n_lat) -> MoonBody1D
+HotMoonBody(n_lat, n_lon; kwargs...) -> MoonBody2D
+```
+
+Convenience constructor that returns the appropriate moon type based on the number of arguments. This is the recommended way to create moon objects in most cases.
+
+### Signatures
+
+**1D Moon:**
+```julia
+HotMoonBody(n_lat::Int) -> MoonBody1D
+```
+
+Equivalent to `MoonBody1D(n_lat)`.
+
+**2D Moon:**
+```julia
+HotMoonBody(n_lat::Int, n_lon::Int; seed=42, sea_level=0.1, 
+            scale=0.02, octaves=3) -> MoonBody2D
+```
+
+Equivalent to `MoonBody2D(n_lat, n_lon; ...)` with all the same keyword arguments.
+
+### Examples
+
+```julia
+# These pairs are equivalent:
+moon1 = HotMoonBody(18)
+moon1 = MoonBody1D(18)
+
+moon2 = HotMoonBody(90, 180)
+moon2 = MoonBody2D(90, 180)
+
+moon3 = HotMoonBody(90, 180, seed=100, sea_level=-0.1)
+moon3 = MoonBody2D(90, 180, seed=100, sea_level=-0.1)
+
+# The convenience constructor enables cleaner code:
+function run_quick_test(use_2d::Bool)
+    moon = use_2d ? HotMoonBody(18, 36) : HotMoonBody(18)
+    # ... rest of simulation code identical ...
+end
+```
+
+### When to Use Which Type
+
+**Use MoonBody1D when:**
+- You need fast iteration during development
+- You're studying latitudinal patterns (pole-to-equator gradients)
+- You don't need terrain or longitude effects
+- Simulation time matters more than spatial detail
+
+**Use MoonBody2D when:**
+- You need realistic terrain and land-ocean contrasts
+- Longitudinal variations matter (day/night cycles, continents)
+- You're studying moisture transport or biomes
+- You want publication-quality visualizations
+
+**Resolution Guidelines:**
+
+| Resolution | n_lat (1D) | n_lat × n_lon (2D) | Use Case |
+|------------|------------|--------------------|----------|
+| Low        | 18         | 18 × 36            | Quick tests, development |
+| Medium     | 36         | 36 × 72            | Standard simulations |
+| High       | 90         | 90 × 180           | Production, visualization |
+| Very High  | 180        | 180 × 360          | Research, publication |
+
+**Note:** 2D simulations scale as O(n_lat × n_lon), so doubling resolution quadruples runtime. Use multithreading for large 2D grids:
+
+```bash
+julia --project=. -t 4 scripts/run_2d.jl
+```

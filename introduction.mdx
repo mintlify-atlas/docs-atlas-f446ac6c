@@ -1,0 +1,161 @@
+---
+title: Introduction
+description: A scientific Julia framework for modeling climate dynamics on an exoplanet moon
+---
+
+# Hot Moon Climate Simulator
+
+A scientific Julia framework for modeling 2D climate dynamics on an exoplanet moon. Simulates temperature, moisture, atmospheric circulation, and biome evolution using energy balance equations.
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Get started with Julia and required dependencies
+  </Card>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Run your first 1D climate simulation in minutes
+  </Card>
+  <Card title="API reference" icon="code" href="/api/moon-types">
+    Explore the complete API documentation
+  </Card>
+  <Card title="Guides" icon="book" href="/guides/1d-simulations">
+    Learn from simulation guides and examples
+  </Card>
+</CardGroup>
+
+## Overview
+
+Hot Moon simulates the climate physics of a tidally-locked moon orbiting a gas giant exoplanet with unique characteristics:
+
+- **28-hour rotation period** - Slower than Earth, creating extended day/night cycles
+- **64-hour orbital period** - Moon completes an orbit around its planet in ~2.7 days
+- **Periodic eclipses** - 4-hour eclipses when the moon passes behind its planet
+- **Solar constant of 2100 W/m²** - 1.54× Earth's insolation
+- **Procedural terrain** - Fractal-generated mountains, oceans, and elevation-dependent effects
+
+The simulator uses ordinary differential equations rather than full fluid dynamics, enabling efficient long-duration simulations (100,000+ hours) while capturing key climate feedbacks.
+
+## Key features
+
+### Physics engine
+
+<CardGroup cols={1}>
+  <Card title="Radiative transfer" icon="sun">
+    Ice-albedo feedback and water vapor greenhouse effect with realistic temperature-dependent transitions
+  </Card>
+  <Card title="Heat transport" icon="arrows-left-right">
+    Conduction and temperature-dependent convection with terrain-aware transport barriers
+  </Card>
+  <Card title="Moisture dynamics" icon="droplet">
+    Clausius-Clapeyron saturation, ocean evaporation, and orographic precipitation including rain shadows
+  </Card>
+  <Card title="Biome system" icon="tree">
+    12 distinct biome classes with unique thermal properties that evolve based on temperature and moisture
+  </Card>
+</CardGroup>
+
+### Simulation modes
+
+Hot Moon supports multiple complexity levels to match your needs:
+
+| Mode | State Variables | Use Case |
+|------|-----------------|----------|
+| 1D Latitude | Temperature | Quick tests, educational demos |
+| 2D Temperature | T[lat,lon] | Basic climate patterns |
+| 2D + Moisture | T, M | Full water cycle simulation |
+| 2D Two-Layer | T, M, U, M_up | Atmospheric circulation |
+
+### Biome classification
+
+12 distinct biome classes with unique thermal properties:
+
+| Biome | Heat Capacity | Conditions |
+|-------|---------------|------------|
+| Ocean | 2.0×10⁷ J/m²/K | Elevation < 0 |
+| Ice Sheet | 1.5×10⁷ | T < -10°C |
+| Tropical Forest | 8.0×10⁶ | T > 20°C, wet |
+| Hot Desert | 5.0×10⁵ | T > 20°C, dry |
+| Mountain | 3.0×10⁵ | Elevation > 0.5 |
+
+See the full biome reference for all 12 classifications.
+
+### Visualization capabilities
+
+- Global temperature and moisture heatmaps
+- Latitude-time Hovmöller diagrams showing seasonal evolution
+- Animated GIF generation for time-lapse evolution
+- Biome distribution maps
+- Precipitation pattern visualization
+
+## Physics model
+
+### Orbital mechanics
+
+The moon has a 28-hour rotation period (day length) and a 64-hour orbital period around its parent planet. This non-synchronous rotation means:
+
+- Every location experiences day and night as the moon rotates
+- The subsolar point moves westward at ~12.9°/hour
+- Eclipses occur when the moon passes behind the planet (4-hour duration every 64 hours)
+
+### Energy balance
+
+The core equation for each grid cell:
+
+```
+dT/dt = (Q_in - Q_out + Q_transport + Q_latent) / C
+```
+
+Where:
+- **Q_in** = Solar input × (1 - albedo) × atmospheric transmission
+- **Q_out** = εσT⁴ × IR transmissivity (greenhouse-modified)
+- **Q_transport** = Heat diffusion from neighbors (terrain-weighted)
+- **Q_latent** = Latent heat from precipitation
+- **C** = Biome-dependent heat capacity
+
+### Key climate feedbacks
+
+**Ice-albedo feedback** - Smooth tanh transition at freezing point:
+
+```julia
+ice_fraction = 0.5 * (1 - tanh((T - 273.15) / 10))
+albedo = 0.28 + 0.32 * ice_fraction
+```
+
+**Water vapor greenhouse effect** - Logarithmic saturation:
+
+```julia
+τ_water = 0.8 * log(1 + M / 5.0)
+transmissivity = 2 / (2 + τ_base + τ_water)
+```
+
+**Orographic precipitation** - Altitude-enhanced condensation:
+
+```julia
+T_altitude = T - 0.0065 * elevation * 5000  # Lapse rate
+M_sat = clausius_clapeyron(T_altitude)
+precip = max(0, M - M_sat) * PRECIP_RATE
+```
+
+## Performance
+
+Benchmarks on a 4-core system:
+
+| Grid Size | Mode | Time (1000 hr sim) | Threads |
+|-----------|------|-------------------|------|
+| 18 lat | 1D | ~2 sec | 1 |
+| 45×90 | 2D temp | ~30 sec | 4 |
+| 90×180 | 2D + moisture | ~3 min | 4 |
+| 45×90 | Two-layer | ~5 min | 4 |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Install Hot Moon" icon="download" href="/installation">
+    Set up Julia and dependencies
+  </Card>
+  <Card title="Run your first simulation" icon="rocket" href="/quickstart">
+    Create your first climate simulation
+  </Card>
+  <Card title="Run your first simulation" icon="play" href="/quickstart">
+    Quick tutorial to get you started
+  </Card>
+</CardGroup>

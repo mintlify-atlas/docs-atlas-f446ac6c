@@ -1,0 +1,373 @@
+---
+title: 'Procedural Terrain Generation'
+description: 'How to configure terrain parameters for realistic landmasses'
+---
+
+Hot Moon uses fractal Brownian motion (fBm) noise to generate procedural terrain. This creates realistic continents, mountain ranges, and ocean basins with seamless longitude wrapping.
+
+## Terrain Parameters
+
+Four key parameters control terrain generation:
+
+```julia
+moon = HotMoonBody(
+    90, 180,
+    seed=32,          # Random seed for reproducibility
+    sea_level=0.05,   # Ocean coverage threshold
+    scale=0.01,       # Feature size (smaller = larger landmasses)
+    octaves=5         # Detail level (higher = more complexity)
+)
+```
+
+### Parameter Effects
+
+<ParamField path="seed" type="Int" default="42">
+  Random seed for the noise generator. Same seed always produces the same terrain.
+
+  **Use different seeds** to explore diverse planetary configurations.
+</ParamField>
+
+<ParamField path="sea_level" type="Float64" default="0.1">
+  Threshold separating ocean (negative elevation) from land (positive).
+
+  - **0.0**: ~30-40% ocean (Earth-like)
+  - **0.05**: ~40-50% ocean (balanced)
+  - **0.1**: ~60-70% ocean (water world)
+  - **0.2**: ~80-90% ocean (archipelagos)
+  - **-0.1**: ~10-20% ocean (desert planet)
+
+  <Tip>
+    For moisture simulations, aim for **40-60% ocean** (sea_level = 0.0 to 0.1) to ensure sufficient evaporation.
+  </Tip>
+</ParamField>
+
+<ParamField path="scale" type="Float64" default="0.02">
+  Spatial scale of noise features. Controls the size of continents and ocean basins.
+
+  - **0.005**: Very large continents, gentle terrain
+  - **0.01**: Large continents (recommended default)
+  - **0.02**: Medium continents
+  - **0.05**: Small islands, fragmented landmasses
+  - **0.1**: Tiny scattered islands
+
+  <Info>
+    **Lower scale** = larger features. Think of it as "zooming out" on the noise function.
+  </Info>
+</ParamField>
+
+<ParamField path="octaves" type="Int" default="3">
+  Number of noise layers to combine. Higher octaves add fine-grained detail.
+
+  - **1**: Very smooth, unrealistic (large blobs)
+  - **3**: Moderate detail (default)
+  - **5**: High detail, realistic mountain ranges
+  - **8**: Very detailed, but may add computational cost
+
+  Each octave doubles frequency and halves amplitude (persistence = 0.5).
+</ParamField>
+
+## How Terrain Generation Works
+
+<Steps>
+  <Step title="Create 3D noise sampler">
+    Uses fractal Brownian motion with cylindrical coordinates for seamless wrapping:
+
+    ```julia
+    # From src/physics/terrain.jl
+    sampler = fbm_fractal_3d(
+        seed=seed,
+        octaves=octaves,
+        persistence=0.5,   # Amplitude decay
+        lacunarity=2.0     # Frequency increase
+    )
+    ```
+  </Step>
+
+  <Step title="Sample at each grid cell">
+    Convert lat/lon to 3D cylindrical coordinates to avoid seam at longitude wraparound:
+
+    ```julia
+    function sample_terrain_elevation(lat, lon, sampler; sea_level, scale)
+        lon_rad = deg2rad(lon)
+        
+        x = lat * scale
+        y = cos(lon_rad) * 90.0 * scale
+        z = sin(lon_rad) * 90.0 * scale
+        
+        noise_val = sample(sampler, x, y, z)  # Range: ~[-1, 1]
+        return noise_val - sea_level
+    end
+    ```
+
+    The cylindrical mapping ensures seamless wrapping at ±180° longitude.
+  </Step>
+
+  <Step title="Compute transport coefficients">
+    Pre-calculate terrain-modified heat and moisture transport for all cell pairs:
+
+    ```julia
+    transport_coeffs = zeros(n_lat, n_lon, 4)  # 4 directions: N, S, E, W
+    populate_heat_transport_coefficients!(transport_coeffs, elevation, n_lat, n_lon)
+    
+    moisture_transport_coeffs = zeros(n_lat, n_lon, 4)
+    populate_moisture_transport_coefficients!(moisture_transport_coeffs, elevation, n_lat, n_lon)
+    ```
+
+    These coefficients encode:
+    - Barrier effects from steep slopes
+    - Downhill flow preference
+    - Ocean transport bonus
+  </Step>
+</Steps>
+
+## Elevation Range and Normalization
+
+<Info>
+  Elevation values are **normalized** to roughly [-1, +1]:
+  - **Negative**: Ocean (depth scales with magnitude)
+  - **Zero**: Sea level / coastline
+  - **Positive**: Land (height scales with magnitude)
+  - **> 0.5**: Mountains (affects biomes)
+
+  These are **not** physical meters, but relative heights for physics calculations.
+</Info>
+
+To convert to approximate physical elevations:
+
+```julia
+ELEVATION_SCALE = 5000.0  # meters (from constants.jl)
+physical_height_m = moon.elevation[i, j] * ELEVATION_SCALE
+```
+
+## Transport Coefficient Modifiers
+
+### Heat Transport
+
+Heat flow between cells is modified by:
+
+**1. Slope barrier factor**:
+```julia
+barrier = 1.0 / (1.0 + SLOPE_BARRIER_STRENGTH * Δelev^2)
+# SLOPE_BARRIER_STRENGTH = 4.0
+```
+Steep elevation differences reduce transport regardless of direction.
+
+**2. Downslope asymmetry**:
+```julia
+asymmetry = 1.0 - DOWNSLOPE_STRENGTH * tanh(Δelev * SLOPE_SCALE)
+# DOWNSLOPE_STRENGTH = 0.4
+# SLOPE_SCALE = 3.0
+```
+Heat flows more easily downhill (neighbor higher than self).
+
+**3. Ocean bonus**:
+```julia
+ocean_mult = is_ocean_cell(elevation) ? OCEAN_TRANSPORT_BONUS : 1.0
+# OCEAN_TRANSPORT_BONUS = 1.5
+```
+Ocean currents transport heat 50% more efficiently than land.
+
+**Combined**:
+```julia
+transport_coeff = ocean_mult * barrier * asymmetry
+```
+
+### Moisture Transport
+
+<Warning>
+  Mountains block moisture **2x stronger** than heat:
+  - `MOISTURE_BARRIER_STRENGTH = 8.0` (vs 4.0 for heat)
+  - `MOISTURE_DOWNSLOPE_PREFERENCE = 0.3` (vs 0.4 for heat)
+
+  This creates pronounced rain shadow effects.
+</Warning>
+
+```julia
+barrier = 1.0 / (1.0 + MOISTURE_BARRIER_STRENGTH * Δelev^2)
+asymmetry = 1.0 - MOISTURE_DOWNSLOPE_PREFERENCE * tanh(Δelev * MOISTURE_SLOPE_SENSITIVITY)
+# MOISTURE_SLOPE_SENSITIVITY = 3.0
+```
+
+## Practical Examples
+
+### Earth-like Planet
+
+```julia
+moon_earth = HotMoonBody(
+    90, 180,
+    seed=123,
+    sea_level=0.0,    # ~35% ocean
+    scale=0.01,       # Large continents
+    octaves=5         # Realistic detail
+)
+```
+
+### Water World (for moisture testing)
+
+```julia
+moon_water = HotMoonBody(
+    90, 180,
+    seed=456,
+    sea_level=0.15,   # ~75% ocean
+    scale=0.02,       # Smaller landmasses
+    octaves=4
+)
+```
+
+### Desert Planet (sparse water)
+
+```julia
+moon_desert = HotMoonBody(
+    90, 180,
+    seed=789,
+    sea_level=-0.1,   # ~15% ocean (isolated seas)
+    scale=0.008,      # Very large landmasses
+    octaves=3
+)
+```
+
+### Archipelago (island chains)
+
+```julia
+moon_islands = HotMoonBody(
+    90, 180,
+    seed=321,
+    sea_level=0.2,    # ~85% ocean
+    scale=0.03,       # Small features
+    octaves=6         # Extra detail for islands
+)
+```
+
+### Mountainous (extreme elevation)
+
+```julia
+moon_mountains = HotMoonBody(
+    90, 180,
+    seed=654,
+    sea_level=0.05,
+    scale=0.015,
+    octaves=7         # High octaves = sharp peaks
+)
+```
+
+## Inspecting Generated Terrain
+
+### Elevation Statistics
+
+```julia
+println("Elevation range: $(round(minimum(moon.elevation), digits=2)) to $(round(maximum(moon.elevation), digits=2))")
+println("Mean elevation: $(round(mean(moon.elevation), digits=2))")
+
+ocean_pct = 100 * sum(moon.elevation .< 0) / (moon.n_lat * moon.n_lon)
+land_pct = 100 - ocean_pct
+mountain_pct = 100 * sum(moon.elevation .> 0.5) / (moon.n_lat * moon.n_lon)
+
+println("Ocean: $(round(ocean_pct, digits=1))%")
+println("Land: $(round(land_pct, digits=1))%")
+println("Mountains (>0.5): $(round(mountain_pct, digits=1))%")
+```
+
+### Visualize Elevation
+
+```julia
+using Plots
+
+heatmap(moon.longitudes, moon.latitudes, moon.elevation,
+    xlabel="Longitude (°)", ylabel="Latitude (°)",
+    title="Terrain Elevation",
+    color=:terrain,
+    colorbar_title="Elevation",
+    size=(1000, 500))
+
+# Add coastline contour
+contour!(moon.longitudes, moon.latitudes, moon.elevation,
+    levels=[0.0], color=:black, linewidth=2, label="Coastline")
+
+savefig("terrain.png")
+```
+
+### Export Terrain Data
+
+```julia
+using DelimitedFiles
+
+# Save as CSV with header
+header = ["lat" "lon" "elevation"]
+data = [(moon.latitudes[i], moon.longitudes[j], moon.elevation[i,j]) 
+        for i in 1:moon.n_lat for j in 1:moon.n_lon]
+data_matrix = hcat([[d[1], d[2], d[3]] for d in data]...)'
+
+open("terrain.csv", "w") do io
+    writedlm(io, header, ',')
+    writedlm(io, data_matrix, ',')
+end
+```
+
+## Reproducing Terrain
+
+<Tip>
+  The `seed` parameter ensures **exact reproducibility**. Save it to recreate the same world:
+
+  ```julia
+  # Original simulation
+  config = RunConfig("2d_moisture")
+  ctx = initialize_run(config)
+  terrain_params = (seed=32, sea_level=0.05, scale=0.01, octaves=5)
+  save_results!(ctx, sol, moon, terrain_params=terrain_params)
+  ```
+
+  The README.md will contain:
+  ```markdown
+  ## Terrain Generation
+  - seed: 32
+  - sea_level: 0.05
+  - scale: 0.01
+  - octaves: 5
+  ```
+
+  Use these to recreate the exact terrain in future runs.
+</Tip>
+
+## Advanced: Custom Terrain
+
+For non-procedural terrain (e.g., real planetary data), construct `MoonBody2D` manually:
+
+```julia
+using HotMoon
+
+# Create empty moon structure
+n_lat, n_lon = 90, 180
+lat_spacing = 90.0 / n_lat
+lon_spacing = 360.0 / n_lon
+
+latitudes = [(i - 0.5) * 180.0 / n_lat - 90.0 for i in 1:n_lat]
+longitudes = [(j + 0.5) * lon_spacing for j in 0:n_lon-1]
+
+cell_areas = [cos(deg2rad(lat)) for lat in latitudes, _ in 1:n_lon]
+cell_areas ./= sum(cell_areas)
+
+# Load custom elevation data
+elevation = ... # Your [n_lat, n_lon] matrix here (values roughly -1 to +1)
+
+# Compute transport coefficients
+transport_coeffs = zeros(Float64, n_lat, n_lon, 4)
+populate_heat_transport_coefficients!(transport_coeffs, elevation, n_lat, n_lon)
+
+moisture_transport_coeffs = zeros(Float64, n_lat, n_lon, 4)
+populate_moisture_transport_coefficients!(moisture_transport_coeffs, elevation, n_lat, n_lon)
+
+transport_cache = zeros(Float64, n_lat * n_lon)
+moisture_cache = zeros(Float64, n_lat * n_lon)
+
+# Construct moon
+moon = MoonBody2D(n_lat, n_lon, latitudes, longitudes, cell_areas,
+                  elevation, transport_coeffs, transport_cache,
+                  moisture_transport_coeffs, moisture_cache)
+```
+
+## Next Steps
+
+- Run [2D temperature simulations](/guides/2d-temperature) with your terrain
+- Add [moisture dynamics](/guides/moisture-coupling) to see precipitation patterns
+- Create [visualizations](/guides/visualization) of terrain and climate
+- Explore [performance optimization](/guides/performance) for large grids

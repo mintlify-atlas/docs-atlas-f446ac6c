@@ -1,0 +1,468 @@
+---
+title: 'Visualization Functions'
+description: 'Complete API reference for plotting and animation functions in Hot Moon Climate Simulator'
+---
+
+## Overview
+
+The visualization module provides comprehensive plotting and animation capabilities for both 1D and 2D climate simulations. Functions are organized by category: snapshots, time series, animations, and specialized plots.
+
+All visualization functions work with the standard Julia Plots.jl backend and return plot objects that can be further customized or saved.
+
+## 2D Snapshot Functions
+
+### plot_field_snapshot
+
+```julia
+plot_field_snapshot(sol, moon::MoonBody2D, variable; time_idx=-1, show_coastlines=true)
+```
+
+Create a single heatmap snapshot at a specific time.
+
+**Parameters:**
+- `sol`: ODE solution object from `run_simulation` or related functions
+- `moon`: MoonBody2D instance
+- `variable`: PlotVariable type (Temperature, Moisture, Precipitation, or Biome)
+- `time_idx`: Time index to plot (default: -1 for final state)
+- `show_coastlines`: Whether to overlay coastline contours (default: true)
+
+**Returns:** Plot object
+
+**Example:**
+```julia
+sol, moon = run_simulation_with_moisture(moon, 5000.0, T0, M0)
+
+# Plot final temperature distribution
+p = plot_field_snapshot(sol, moon, Temperature)
+savefig(p, "temperature_final.png")
+
+# Plot moisture at a specific time (hour 2800)
+idx = findfirst(t -> t >= 2800 * 3600, sol.t)
+p = plot_field_snapshot(sol, moon, Moisture, time_idx=idx)
+```
+
+### Convenience Functions
+
+Quick access functions for specific variables:
+
+```julia
+plot_temperature_snapshot(sol, moon; kwargs...)
+plot_moisture_snapshot(sol, moon; kwargs...)
+plot_precipitation_snapshot(sol, moon; kwargs...)
+```
+
+**Example:**
+```julia
+# These are equivalent
+p1 = plot_field_snapshot(sol, moon, Temperature)
+p2 = plot_temperature_snapshot(sol, moon)
+```
+
+### plot_elevation_map
+
+```julia
+plot_elevation_map(moon::MoonBody2D)
+```
+
+Create a heatmap of terrain elevation with coastline contour.
+
+**Example:**
+```julia
+moon = HotMoonBody(90, 180, seed=42, sea_level=0.05)
+p = plot_elevation_map(moon)
+savefig(p, "terrain.png")
+```
+
+### plot_biome_with_legend
+
+```julia
+plot_biome_with_legend(sol, moon::MoonBody2D; time_idx=-1)
+```
+
+Create a biome classification map with a separate legend panel showing all 12 biome types.
+
+**Example:**
+```julia
+# Plot final biome distribution
+p = plot_biome_with_legend(sol, moon)
+savefig(p, "biomes_final.png")
+```
+
+## 2D Time Series Functions
+
+### plot_global_mean_timeseries
+
+```julia
+plot_global_mean_timeseries(sol, moon::MoonBody2D, variable; 
+                            hours=nothing, show_eclipses=true)
+```
+
+Plot area-weighted global mean for any variable over time.
+
+**Parameters:**
+- `hours`: Number of hours to display (default: nothing shows full simulation)
+- `show_eclipses`: Whether to shade eclipse periods (default: true)
+
+**Example:**
+```julia
+# Plot full temperature evolution
+p = plot_global_mean_timeseries(sol, moon, Temperature)
+
+# Plot last 500 hours of moisture
+p = plot_global_mean_timeseries(sol, moon, Moisture, hours=500)
+```
+
+### Convenience Functions
+
+```julia
+plot_temperature_global_mean(sol, moon; kwargs...)
+plot_moisture_global_mean(sol, moon; kwargs...)
+plot_precipitation_global_mean(sol, moon; kwargs...)
+```
+
+### plot_longitude_time_hovmoeller
+
+```julia
+plot_longitude_time_hovmoeller(sol, moon::MoonBody2D, variable;
+                                latitude_index=nothing, hours=280)
+```
+
+Create a time-longitude Hovmöller diagram at a specific latitude, showing how a variable evolves across longitudes over time.
+
+**Parameters:**
+- `latitude_index`: Latitude band index (default: equator)
+- `hours`: Number of hours to display (default: 280)
+
+**Example:**
+```julia
+# Temperature evolution at equator
+p = plot_longitude_time_hovmoeller(sol, moon, Temperature)
+
+# Moisture at 45°N latitude
+lat_idx = argmin(abs.(moon.latitudes .- 45.0))
+p = plot_longitude_time_hovmoeller(sol, moon, Moisture, 
+                                   latitude_index=lat_idx)
+```
+
+### plot_latitude_time_hovmoeller
+
+```julia
+plot_latitude_time_hovmoeller(sol, moon::MoonBody2D, variable;
+                               longitude_index=nothing, hours=280)
+```
+
+Create a time-latitude Hovmöller diagram at a specific longitude.
+
+**Parameters:**
+- `longitude_index`: Longitude index (default: subsolar point at 0°)
+- `hours`: Number of hours to display (default: 280)
+
+**Example:**
+```julia
+# Temperature evolution along prime meridian
+p = plot_latitude_time_hovmoeller(sol, moon, Temperature)
+```
+
+### plot_latitude_mean_range
+
+```julia
+plot_latitude_mean_range(sol, moon::MoonBody2D, variable)
+```
+
+Plot variable by latitude with mean and min/max range, showing day/night or spatial variations.
+
+**Example:**
+```julia
+# Temperature profile with diurnal range
+p = plot_latitude_mean_range(sol, moon, Temperature)
+savefig(p, "temp_latitude_range.png")
+```
+
+## 2D Animation Functions
+
+### animate_field_evolution
+
+```julia
+animate_field_evolution(sol, moon::MoonBody2D, variable, filename;
+                        hours=448, frame_skip=4, fps=10)
+```
+
+Create an animated GIF of a variable over time.
+
+**Parameters:**
+- `filename`: Output filename for GIF
+- `hours`: Number of hours to animate (default: 448 = 1 metacycle)
+- `frame_skip`: Skip frames to reduce file size (default: 4)
+- `fps`: Frames per second (default: 10)
+
+**Example:**
+```julia
+# Create 1-metacycle temperature animation
+animate_field_evolution(sol, moon, Temperature, "temp.gif")
+
+# High-resolution moisture animation (last 200 hours)
+animate_field_evolution(sol, moon, Moisture, "moisture_detail.gif",
+                        hours=200, frame_skip=1, fps=15)
+```
+
+### Convenience Functions
+
+```julia
+animate_temperature_evolution(sol, moon, filename; kwargs...)
+animate_moisture_evolution(sol, moon, filename; kwargs...)
+animate_precipitation_evolution(sol, moon, filename; kwargs...)
+```
+
+### animate_combined_climate
+
+```julia
+animate_combined_climate(sol, moon::MoonBody2D, filename;
+                         hours=448, frame_skip=4, fps=10)
+```
+
+Create an animated GIF with Temperature, Moisture, and Precipitation side by side.
+
+**Example:**
+```julia
+# Create comprehensive climate animation
+animate_combined_climate(sol, moon, "climate.gif", hours=448)
+```
+
+### animate_all_variables
+
+```julia
+animate_all_variables(sol, moon::MoonBody2D, output_dir;
+                      hours=448, frame_skip=4, fps=10)
+```
+
+Generate all animation types for a moisture-coupled simulation. Creates:
+- `climate_animation.gif` (combined T/M/P)
+- `temperature.gif`
+- `moisture.gif`
+- `precipitation.gif`
+
+**Example:**
+```julia
+# Generate complete animation suite
+animate_all_variables(sol, moon, "output/animations")
+```
+
+## 1D Visualization Functions
+
+### plot_1d_global_mean_temperature
+
+```julia
+plot_1d_global_mean_temperature(sol, moon::MoonBody1D)
+```
+
+Plot area-weighted global mean temperature over time with day/night and eclipse shading.
+
+**Example:**
+```julia
+moon = HotMoonBody(18)  # 1D moon with 18 latitude bands
+sol = run_simulation(moon, 2000.0)
+p = plot_1d_global_mean_temperature(sol, moon)
+```
+
+### plot_1d_latitude_temperature_profile
+
+```julia
+plot_1d_latitude_temperature_profile(sol, moon::MoonBody1D)
+```
+
+Plot time-averaged temperature as a function of latitude.
+
+**Example:**
+```julia
+p = plot_1d_latitude_temperature_profile(sol, moon)
+savefig(p, "latitude_profile.png")
+```
+
+### plot_1d_temperature_heatmap
+
+```julia
+plot_1d_temperature_heatmap(sol, moon::MoonBody1D)
+```
+
+Create a latitude-time heatmap showing temperature evolution across all latitude bands.
+
+**Example:**
+```julia
+p = plot_1d_temperature_heatmap(sol, moon)
+savefig(p, "evolution_heatmap.png")
+```
+
+### plot_1d_latitude_temperature_range
+
+```julia
+plot_1d_latitude_temperature_range(sol, moon::MoonBody1D)
+```
+
+Plot temperature by latitude with mean and min/max range, showing diurnal variations.
+
+**Example:**
+```julia
+p = plot_1d_latitude_temperature_range(sol, moon)
+```
+
+### plot_1d_latitude_temperature_timeseries
+
+```julia
+plot_1d_latitude_temperature_timeseries(sol, moon::MoonBody1D)
+```
+
+Plot temperature evolution over time with separate lines for each latitude band.
+
+**Example:**
+```julia
+p = plot_1d_latitude_temperature_timeseries(sol, moon)
+savefig(p, "timeseries_by_latitude.png")
+```
+
+### plot_1d_summary_to_files
+
+```julia
+plot_1d_summary_to_files(sol, moon::MoonBody1D, filename="summary.png")
+```
+
+Generate all 1D plots and save them as separate PNG files with the specified base filename.
+
+**Example:**
+```julia
+# Creates: summary_global_mean.png, summary_latitude_profile.png, etc.
+plot_1d_summary_to_files(sol, moon, "run_001_summary")
+```
+
+## Biome Analysis Functions
+
+### compute_biome_map
+
+```julia
+compute_biome_map(T_2d, M_2d, moon::MoonBody2D) -> Matrix{Int}
+```
+
+Compute biome classification for each cell from temperature, moisture, and elevation.
+
+**Returns:** Matrix of biome IDs (0-11)
+
+**Example:**
+```julia
+n_cells = moon.n_lat * moon.n_lon
+T_2d = reshape(sol.u[end][1:n_cells], moon.n_lat, moon.n_lon)
+M_2d = reshape(sol.u[end][n_cells+1:2n_cells], moon.n_lat, moon.n_lon)
+
+biome_map = compute_biome_map(T_2d, M_2d, moon)
+```
+
+### print_biome_statistics
+
+```julia
+print_biome_statistics(T_2d, M_2d, moon::MoonBody2D)
+```
+
+Print statistics about biome coverage, showing percentage of surface area covered by each biome type.
+
+**Example:**
+```julia
+print_biome_statistics(T_2d, M_2d, moon)
+# Output:
+# Biome Coverage (area-weighted):
+# ----------------------------------------
+#   Ocean                : 42.3%
+#   Ice Sheet            :  8.1%
+#   Temperate Forest     : 12.7%
+#   ...
+```
+
+## Helper Functions
+
+### add_coastline_contour_to_plot!
+
+```julia
+add_coastline_contour_to_plot!(moon::MoonBody2D)
+```
+
+Add a black contour line at elevation=0 to mark coastlines. Used internally by snapshot functions.
+
+### add_eclipse_shading_to_plot!
+
+```julia
+add_eclipse_shading_to_plot!(t_start_hr, t_end_hr)
+```
+
+Add gray vertical shading to indicate eclipse periods. Used internally by time series plots.
+
+### add_day_night_shading_to_plot!
+
+```julia
+add_day_night_shading_to_plot!(t_start_hr, t_end_hr)
+```
+
+Add subtle shading to indicate day/night cycles. Used internally by 1D time series plots.
+
+## PlotVariable Types
+
+The visualization system uses type-based dispatch for different variables:
+
+- `Temperature` - Surface temperature in °C
+- `Moisture` - Column water vapor in kg/m²
+- `Precipitation` - Precipitation rate in mm/hr
+- `Biome` - Biome classification (categorical)
+
+**Example:**
+```julia
+# Type-based plotting
+plot_field_snapshot(sol, moon, Temperature)
+plot_global_mean_timeseries(sol, moon, Moisture)
+```
+
+## Color Schemes
+
+Different variables use appropriate color schemes:
+
+| Variable | Color Scheme | Range |
+|----------|-------------|-------|
+| Temperature | `:thermal` | Adaptive (30th-98th percentile) |
+| Moisture | `:Blues` | 0 to max |
+| Precipitation | `:YlGnBu` | 0 to max |
+| Elevation | `:terrain` | -1 to 1 |
+| Biomes | Categorical (12 colors) | 0-11 |
+
+## Complete Workflow Example
+
+```julia
+using HotMoon
+
+# Create 2D moon with terrain
+moon = HotMoonBody(90, 180, seed=42, sea_level=0.05)
+
+# Visualize terrain
+plot_elevation_map(moon)
+
+# Run moisture-coupled simulation
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+sol = run_simulation_with_moisture(moon, 10000.0, T0, M0)
+
+# Create snapshots
+plot_temperature_snapshot(sol, moon)
+plot_moisture_snapshot(sol, moon)
+plot_biome_with_legend(sol, moon)
+
+# Analyze time series
+plot_temperature_global_mean(sol, moon, hours=1000)
+plot_latitude_mean_range(sol, moon, Temperature)
+
+# Create Hovmöller diagrams
+plot_longitude_time_hovmoeller(sol, moon, Temperature)
+plot_latitude_time_hovmoeller(sol, moon, Moisture)
+
+# Generate animations
+animate_combined_climate(sol, moon, "climate.gif", hours=448)
+animate_all_variables(sol, moon, "output/animations")
+
+# Biome analysis
+n_cells = moon.n_lat * moon.n_lon
+T_final = reshape(sol.u[end][1:n_cells], moon.n_lat, moon.n_lon)
+M_final = reshape(sol.u[end][n_cells+1:2n_cells], moon.n_lat, moon.n_lon)
+print_biome_statistics(T_final, M_final, moon)
+```

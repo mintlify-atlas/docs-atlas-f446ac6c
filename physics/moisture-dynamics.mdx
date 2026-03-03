@@ -1,0 +1,221 @@
+---
+title: Moisture Dynamics
+description: Evaporation, precipitation, Clausius-Clapeyron relation, and orographic effects in the Hot Moon climate model
+---
+
+## Overview
+
+The moisture system couples temperature and water vapor through:
+
+1. **Evaporation** from warm ocean surfaces
+2. **Clausius-Clapeyron relation** governing saturation capacity
+3. **Orographic precipitation** when air rises over mountains
+4. **Latent heat coupling** between moisture phase changes and temperature
+5. **Terrain-dependent transport** with stronger mountain barriers than heat
+
+## Saturation Moisture
+
+### Clausius-Clapeyron Relation
+
+Warmer air can hold exponentially more moisture:
+
+$$
+M_{\text{sat}}(T) = M_{\text{ref}} \cdot \exp\left(\lambda \cdot \frac{T - T_{\text{ref}}}{T_{\text{ref}}}\right)
+$$
+
+where:
+- $M_{\text{ref}} = 5.0$ kg/m² (saturation at reference temperature)
+- $T_{\text{ref}} = 273.15$ K (0°C reference)
+- $\lambda = 17.0$ (Clausius-Clapeyron scale factor)
+
+**Source Code**: `src/physics/moisture.jl:12-15`
+
+<Note>
+The exponent is clamped to [-10, 10] for numerical stability, preventing overflow at extreme temperatures. This covers the range 150 K to 500 K, well beyond physical conditions on the moon.
+</Note>
+
+**Example Values**:
+
+| Temperature | $M_{\text{sat}}$ | Relative to 0°C |
+|-------------|------------------|------------------|
+| 253 K (-20°C) | 0.46 kg/m² | 9.2% |
+| 263 K (-10°C) | 1.45 kg/m² | 29% |
+| 273 K (0°C) | 5.00 kg/m² | 100% (reference) |
+| 283 K (10°C) | 17.2 kg/m² | 344% |
+| 293 K (20°C) | 59.3 kg/m² | 1186% |
+| 303 K (30°C) | 204 kg/m² | 4080% |
+
+## Evaporation
+
+### Ocean Surface Evaporation
+
+Evaporation occurs only from ocean cells above threshold temperature:
+
+**Evaporation Rate** (`compute_ocean_evaporation_rate`):
+
+$$
+E(T, z) = \begin{cases}
+k_{\text{evap}} \cdot (T - T_{\text{evap}}) & \text{if } z < 0 \text{ and } T > T_{\text{evap}} \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+where:
+- $k_{\text{evap}} = 0.3 \times 10^{-5}$ kg·m⁻²·s⁻¹·K⁻¹ (evaporation rate coefficient)
+- $T_{\text{evap}} = 273.15$ K (evaporation threshold - freezing point)
+- $z$ = elevation (negative for ocean)
+
+**Source Code**: `src/physics/moisture.jl:27-38`
+
+**Example**: Tropical ocean at 300 K:
+
+$$
+E = 0.3 \times 10^{-5} \cdot (300 - 273.15) = 8.1 \times 10^{-5} \text{ kg·m⁻²·s⁻¹}
+$$
+
+## Precipitation
+
+### Orographic Precipitation
+
+When air rises over mountains, it cools adiabatically, reducing saturation capacity:
+
+**Temperature at Altitude** (`compute_temperature_at_altitude`):
+
+$$
+T_{\text{altitude}}(T_{\text{surf}}, z) = T_{\text{surf}} - \Gamma \cdot \max(0, z) \cdot z_{\text{scale}}
+$$
+
+where:
+- $\Gamma = 6.5 \times 10^{-3}$ K/m (atmospheric lapse rate)
+- $z_{\text{scale}} = 5000$ m (elevation normalization)
+- $z \in [-1, 1]$ (normalized elevation)
+
+**Precipitation Rate** (`compute_orographic_precipitation_rate`):
+
+$$
+P(M, T, z) = \begin{cases}
+k_{\text{precip}} \cdot (M - M_{\text{sat}}(T_{\text{altitude}})) & \text{if } M > M_{\text{sat}}(T_{\text{altitude}}) \\
+0 & \text{otherwise}
+\end{cases}
+$$
+
+where $k_{\text{precip}} = 0.002$ s⁻¹ (precipitation rate coefficient).
+
+**Source Code**: `src/physics/moisture.jl:46-71`
+
+<Note>
+Orographic precipitation creates rain shadows: moisture-laden air rising over mountains precipitates on the windward side, leaving the leeward side dry. This effect is visible in 2D simulations with prevailing wind directions.
+</Note>
+
+**Example**: Air at sea level with 10 kg/m² moisture rises to z = 0.5 (2500 m):
+
+1. Surface temperature: 290 K
+2. Temperature at altitude: $290 - 6.5 \times 10^{-3} \times 2500 = 273.75$ K
+3. Saturation at altitude: $M_{\text{sat}}(273.75) \approx 5.2$ kg/m²
+4. Excess moisture: $10 - 5.2 = 4.8$ kg/m²
+5. Precipitation rate: $0.002 \times 4.8 = 0.0096$ kg·m⁻²·s⁻¹
+
+## Latent Heat Coupling
+
+Phase changes of water couple moisture and temperature dynamics:
+
+**Latent Heat Flux** (`compute_latent_heat_flux`):
+
+$$
+Q_{\text{latent}} = L_v \cdot (P - E)
+$$
+
+where:
+- $L_v = 2.5 \times 10^6$ J/kg (latent heat of vaporization)
+- $P$ = precipitation rate (kg·m⁻²·s⁻¹)
+- $E$ = evaporation rate (kg·m⁻²·s⁻¹)
+
+**Physical Interpretation**:
+- $P > E$: Net condensation → releases heat (warms surface)
+- $E > P$: Net evaporation → absorbs heat (cools surface)
+
+**Source Code**: `src/physics/moisture.jl:74-81`
+
+<Note>
+Latent heat creates a moisture-temperature feedback: warm ocean evaporates → moisture advects → encounters mountains → precipitates → releases latent heat → warms region. This feedback can sustain monsoon-like circulation patterns.
+</Note>
+
+## Moisture Transport
+
+### Terrain Barriers
+
+Moisture transport uses similar terrain modifiers as heat, but with **stronger mountain barriers**:
+
+**Moisture Barrier** (`compute_directional_moisture_transport_modifier`):
+
+$$
+f_{\text{moisture\_barrier}}(\Delta z) = \frac{1}{1 + s_{\text{moisture}} \cdot (\Delta z)^2}
+$$
+
+where $s_{\text{moisture}} = 8.0$ (twice the heat barrier strength of 4.0).
+
+**Moisture Downslope Preference**:
+
+$$
+f_{\text{moisture\_asymmetry}}(\Delta z) = 1 - s_{\text{moisture\_down}} \cdot \tanh(\Delta z \cdot s_{\text{moisture\_scale}})
+$$
+
+where:
+- $s_{\text{moisture\_down}} = 0.3$ (moisture downslope preference)
+- $s_{\text{moisture\_scale}} = 3.0$ (moisture slope sensitivity)
+
+**Source Code**: `src/physics/terrain.jl:120-133`
+
+<Note>
+Mountains block moisture (barrier strength = 8.0) twice as effectively as heat (barrier strength = 4.0). This creates distinct climate zones: wet windward slopes and dry rain shadows.
+</Note>
+
+### Moisture Diffusion
+
+Moisture transport follows a diffusion equation:
+
+$$
+\frac{\partial M}{\partial t}\bigg|_{\text{transport}} = D_M \cdot \nabla \cdot (m_{\text{moisture}} \cdot \nabla M)
+$$
+
+where:
+- $D_M = 0.7 \times 10^{-4}$ s⁻¹ (moisture diffusion coefficient)
+- $m_{\text{moisture}}$ = terrain-dependent transport modifier
+
+## Moisture Parameters
+
+| Constant | Value | Unit | Description |
+|----------|-------|------|-------------|
+| `MOISTURE_REF_TEMP` | 273.15 | K | Reference temperature for saturation |
+| `MOISTURE_REF_SATURATION` | 5.0 | kg/m² | Saturation moisture at reference T |
+| `CLAUSIUS_CLAPEYRON_SCALE` | 17.0 | - | Exponential scale factor |
+| `LAPSE_RATE` | 6.5×10⁻³ | K/m | Atmospheric temperature lapse rate |
+| `ELEVATION_SCALE` | 5000.0 | m | Elevation normalization scale |
+| `EVAP_RATE` | 0.3×10⁻⁵ | kg·m⁻²·s⁻¹·K⁻¹ | Evaporation rate coefficient |
+| `EVAP_THRESHOLD` | 273.15 | K | Minimum temperature for evaporation |
+| `PRECIP_RATE` | 0.002 | s⁻¹ | Precipitation rate coefficient |
+| `LATENT_HEAT` | 2.5×10⁶ | J/kg | Latent heat of vaporization |
+| `MOISTURE_DIFFUSION` | 0.7×10⁻⁴ | s⁻¹ | Moisture transport diffusion rate |
+| `MOISTURE_BARRIER_STRENGTH` | 8.0 | - | Mountain blocking of moisture |
+| `MOISTURE_DOWNSLOPE_PREFERENCE` | 0.3 | - | Downhill moisture flow preference |
+| `MOISTURE_SLOPE_SENSITIVITY` | 3.0 | - | Slope sensitivity for moisture |
+
+## Complete Moisture Budget
+
+For a single grid cell, the moisture equation is:
+
+$$
+\frac{dM}{dt} = E(T, z) - P(M, T, z) + D_M \cdot \sum_{\text{neighbors}} m_{ij} \cdot (M_j - M_i)
+$$
+
+where:
+- $E$ = evaporation (ocean cells only)
+- $P$ = orographic precipitation (land cells)
+- Transport = diffusion with terrain barriers
+
+## Related Pages
+
+- [Radiative Transfer](/physics/radiative-transfer) - Water vapor greenhouse effect
+- [Heat Transport](/physics/heat-transport) - Temperature affects saturation
+- [Biomes](/physics/biomes) - Moisture-based biome classification
+- [Atmospheric Circulation](/physics/atmospheric-circulation) - Two-layer moisture transport

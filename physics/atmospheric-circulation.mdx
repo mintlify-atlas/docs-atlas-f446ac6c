@@ -1,0 +1,367 @@
+---
+title: Atmospheric Circulation
+description: Two-layer atmosphere model with convective ascent, polar subsidence, and moisture transport
+---
+
+<Note>
+The two-layer atmosphere implementation is **currently archived** due to parameter tuning challenges. The code is fully functional but disabled by default. This page documents the physics for future development.
+
+**Source Code**: `src/archived/twolayer/`
+</Note>
+
+## Overview
+
+The two-layer atmosphere extends the basic climate model with vertical circulation:
+
+**State Variables** (per grid cell):
+1. $T$ - Surface temperature (K)
+2. $M$ - Surface moisture (kg/m²)
+3. $U$ - Upper layer mass (dimensionless, normalized to 1.0)
+4. $M_{\text{up}}$ - Upper layer moisture (kg/m²)
+
+Optionally:
+5. $T_{\text{up}}$ - Upper layer temperature (K) [Phase 2 feature]
+
+## Physical Mechanisms
+
+### Convective Ascent
+
+Warm, moist air rises from the surface to the upper atmosphere:
+
+**Ascent Rate** (`compute_convective_ascent_rate`):
+
+$$
+w_{\text{asc}} = \min\left(f_{\text{lat}} \cdot \frac{\Delta T}{T_{\text{scale}}} \cdot f_{\text{moisture}} \cdot f_{\text{backpressure}} \cdot w_{\text{max}}, \ w_{\text{max}}\right)
+$$
+
+where:
+
+**Latitude Factor**:
+
+$$
+f_{\text{lat}} = \cos(\text{lat})
+$$
+
+(Convection easier in tropics)
+
+**Temperature Excess**:
+
+$$
+\Delta T = T_{\text{surf}} - T_{\text{threshold}}, \quad T_{\text{threshold}} = 295 \text{ K (22°C)}
+$$
+
+**Moisture Boost**:
+
+$$
+f_{\text{moisture}} = 1 + s_{\text{moisture}} \cdot \ln\left(\frac{M_{\text{surf}}}{M_{\text{ref}}}\right), \quad s_{\text{moisture}} = 0.5
+$$
+
+(Logarithmic scaling: high moisture enables stronger convection)
+
+**Backpressure Suppression**:
+
+$$
+f_{\text{backpressure}} = \frac{U_{\text{mean}}}{U_{\text{mean}} + \max(U_{\text{above}}, U_{\text{floor}})}, \quad U_{\text{mean}} = 1.0
+$$
+
+(High mass aloft suppresses further ascent)
+
+**Parameters**:
+- $w_{\text{max}} = 5 \times 10^{-5}$ s⁻¹ (maximum ascent rate)
+- $T_{\text{scale}} = 20$ K (thermal response scale)
+- $M_{\text{ref}} = 5$ kg/m² (reference moisture)
+- $M_{\text{min}} = 2$ kg/m² (minimum moisture for deep convection)
+
+**Source Code**: `src/archived/twolayer/atmosphere.jl:66-94`
+
+<Note>
+Convection requires THREE conditions simultaneously:
+1. Hot surface (T > 295 K)
+2. Sufficient moisture (M > 2 kg/m²)
+3. Space available aloft (U not too large)
+
+This creates realistic convective patterns: ocean cells with warm water and moisture support strong ascent, while dry deserts suppress convection even when hot.
+</Note>
+
+### Subsidence and Descent
+
+Air descends from the upper layer through multiple mechanisms:
+
+**Total Descent Rate** (`compute_total_descent_rate`):
+
+$$
+w_{\text{desc}} = U_{\text{above}} \cdot \left(w_{\text{base}} + w_{\text{excess}} + w_{\text{polar}}\right)
+$$
+
+**1. Base Subsidence** (always present):
+
+$$
+w_{\text{base}} = 5 \times 10^{-6} \text{ s}^{-1}
+$$
+
+**2. Mass Excess Descent** (when U > 1):
+
+$$
+w_{\text{excess}} = k_{\text{mass}} \cdot \max(0, U - 1) \cdot U, \quad k_{\text{mass}} = 1.5 \times 10^{-4} \text{ s}^{-1}
+$$
+
+**3. Polar Sink** (enhanced descent at high latitudes):
+
+$$
+w_{\text{polar}} = \begin{cases}
+0 & \text{if } |\text{lat}| \leq 60° \\
+k_{\text{polar}} \cdot \frac{|\text{lat}| - 60°}{30°} \cdot U & \text{if } |\text{lat}| > 60°
+\end{cases}
+$$
+
+where $k_{\text{polar}} = 2 \times 10^{-5}$ s⁻¹.
+
+**Source Code**: `src/archived/twolayer/atmosphere.jl:96-140`
+
+<Note>
+The polar sink creates a Hadley-like circulation: air rises in the tropics (high solar heating), flows poleward aloft, and descends at high latitudes. This mechanism is critical for heat transport from equator to poles.
+</Note>
+
+## Moisture Coupling
+
+### Ascent Moisture Transfer
+
+Rising air carries moisture upward, but most precipitates during adiabatic cooling:
+
+**Lifting Condensation** (`compute_ascent_moisture_transfer`):
+
+1. **Moisture Lifted**:
+
+$$
+M_{\text{lifted}} = w_{\text{asc}} \cdot M_{\text{surf}} \cdot f_{\text{lift}}, \quad f_{\text{lift}} = 0.1
+$$
+
+2. **Temperature Drop During Ascent**:
+
+$$
+T_{\text{LCL}} = T_{\text{surf}} - \Delta T_{\text{lift}}, \quad \Delta T_{\text{lift}} = 30 \text{ K}
+$$
+
+3. **Saturation at Altitude**:
+
+$$
+M_{\text{sat,LCL}} = M_{\text{ref}} \cdot \exp\left(17 \cdot \frac{T_{\text{LCL}} - 273.15}{273.15}\right)
+$$
+
+4. **Moisture Surviving to Upper Layer**:
+
+$$
+M_{\text{to\_upper}} = \min\left(M_{\text{lifted}}, \ M_{\text{sat,LCL}} \cdot f_{\text{survive}}\right), \quad f_{\text{survive}} = 0.3
+$$
+
+5. **Precipitation During Ascent**:
+
+$$
+P_{\text{ascent}} = \max(0, M_{\text{lifted}} - M_{\text{to\_upper}})
+$$
+
+**Source Code**: `src/archived/twolayer/atmosphere.jl:165-189`
+
+**Example**: Tropical ocean cell with $T = 300$ K, $M = 10$ kg/m², $w_{\text{asc}} = 4 \times 10^{-5}$ s⁻¹:
+
+1. Lifted: $4 \times 10^{-5} \times 10 \times 0.1 = 4 \times 10^{-5}$ kg·m⁻²·s⁻¹
+2. LCL temperature: $300 - 30 = 270$ K
+3. Saturation at LCL: $\approx 3.2$ kg/m²
+4. Can survive: $3.2 \times 0.3 = 0.96$ kg/m²
+5. Precipitation: $4 \times 10^{-5} - 0.96 \times 10^{-5} = 3.04 \times 10^{-5}$ kg·m⁻²·s⁻¹
+
+### Descent Moisture Return
+
+Descending air brings its moisture content back to the surface:
+
+**Descent Moisture Flux** (`compute_descent_moisture_transfer`):
+
+$$
+\dot{M}_{\text{desc}} = w_{\text{desc}} \cdot \frac{M_{\text{up}}}{\max(U_{\text{above}}, U_{\text{floor}})}
+$$
+
+**Source Code**: `src/archived/twolayer/atmosphere.jl:191-204`
+
+### Descent Drying Effect
+
+Descending air warms adiabatically, suppressing surface precipitation:
+
+**Saturation Multiplier** (`compute_descent_saturation_multiplier`):
+
+$$
+M_{\text{sat,eff}} = M_{\text{sat}}(T) \cdot \left(1 + s_{\text{dry}} \cdot \frac{w_{\text{desc}}}{w_{\text{base}}}\right)
+$$
+
+where $s_{\text{dry}} = 2.0$ (descent drying scale).
+
+**Physical Effect**: Regions with strong subsidence (e.g., subtropics, rain shadows) have effectively higher saturation thresholds, creating arid conditions even with moderate moisture.
+
+**Source Code**: `src/archived/twolayer/atmosphere.jl:206-219`
+
+## Upper Layer Transport
+
+### Meridional (Poleward) Flow
+
+Mass flows poleward in the upper layer, driven by pressure gradients:
+
+$$
+\frac{dU}{dt}\bigg|_{\text{meridional}} = k_{\text{merid}} \cdot \nabla_\text{lat} U
+$$
+
+where $k_{\text{merid}} = 2.5 \times 10^{-4}$ s⁻¹ (upper meridional coefficient).
+
+### Zonal (East-West) Flow
+
+Zonal flow includes pressure-driven diffusion plus a westerly bias:
+
+$$
+\frac{dU}{dt}\bigg|_{\text{zonal}} = k_{\text{zonal}} \cdot \nabla_\text{lon} U + k_{\text{west}}
+$$
+
+where:
+- $k_{\text{zonal}} = 5 \times 10^{-5}$ s⁻¹ (zonal pressure flow)
+- $k_{\text{west}} = 2 \times 10^{-5}$ s⁻¹ (westerly bias - analogous to Coriolis effect)
+
+**Source Code**: `src/archived/twolayer/constants_twolayer.jl:38-41`
+
+<Note>
+The westerly bias creates prevailing westerlies in the upper layer, mimicking jet streams. Combined with surface easterlies (not explicitly modeled but emergent from descent patterns), this produces realistic global circulation.
+</Note>
+
+## Upper Layer Temperature (Phase 2)
+
+An extended version tracks upper layer temperature explicitly:
+
+### Heating Mechanisms
+
+**1. Ascent Heat Transfer** (`compute_ascent_heat_transfer`):
+
+$$
+\frac{dT_{\text{up}}}{dt}\bigg|_{\text{ascent}} = \frac{w_{\text{asc}} \cdot (T_{\text{surf}} - T_{\text{up}}) \cdot f_{\text{heat}}}{\max(U, U_{\text{floor}})}
+$$
+
+where $f_{\text{heat}} = 0.3$ (ascent heat transfer fraction).
+
+**2. Latent Heat Release** (`compute_upper_layer_latent_heating`):
+
+$$
+\frac{dT_{\text{up}}}{dt}\bigg|_{\text{latent}} = \frac{L_v \cdot P_{\text{ascent}}}{U \cdot C_{\text{up}}}
+$$
+
+where:
+- $L_v = 2.5 \times 10^6$ J/kg
+- $C_{\text{up}} = 1 \times 10^7$ J·m⁻²·K⁻¹ (upper layer heat capacity)
+
+### Cooling Mechanisms
+
+**1. Radiative Cooling** (`compute_upper_layer_radiative_cooling`):
+
+$$
+\frac{dT_{\text{up}}}{dt}\bigg|_{\text{rad}} = -k_{\text{rad}} \cdot (T_{\text{up}} - T_{\text{eq}})
+$$
+
+where:
+- $k_{\text{rad}} = 2 \times 10^{-6}$ s⁻¹ (radiative cooling rate)
+- $T_{\text{eq}} = 240$ K (radiative equilibrium temperature)
+
+**2. Descent Heat Loss** (`compute_descent_heat_transfer`):
+
+$$
+\frac{dT_{\text{up}}}{dt}\bigg|_{\text{descent}} = -\frac{w_{\text{desc}} \cdot \Delta T_{\text{adiabatic}} \cdot (w_{\text{desc}} / w_{\text{base}})}{\max(U, U_{\text{floor}})}
+$$
+
+where $\Delta T_{\text{adiabatic}} = 30$ K (descent adiabatic warming).
+
+**Source Code**: `src/archived/twolayer/atmosphere.jl:240-314`
+
+## Two-Layer Parameters
+
+| Constant | Value | Unit | Description |
+|----------|-------|------|-------------|
+| **Ascent** |
+| `CONVECTION_TEMP_THRESHOLD` | 295.0 | K | Minimum T for convection (22°C) |
+| `MIN_MOISTURE_CONVECTION` | 2.0 | kg/m² | Minimum M for deep convection |
+| `ASCENT_RATE_MAX` | 5×10⁻⁵ | s⁻¹ | Maximum ascent rate |
+| `THERMAL_RESPONSE_SCALE` | 20.0 | K | Temperature sensitivity |
+| `MOISTURE_ASCENT_SENSITIVITY` | 0.5 | - | Moisture boost factor |
+| **Descent** |
+| `BASE_DESCENT_RATE` | 5×10⁻⁶ | s⁻¹ | Background subsidence |
+| `MASS_DESCENT_COEFF` | 1.5×10⁻⁴ | s⁻¹ | Excess mass descent rate |
+| `POLAR_SINK_STRENGTH` | 2×10⁻⁵ | s⁻¹ | Polar descent enhancement |
+| `POLAR_SINK_LAT` | 60.0 | degrees | Polar sink latitude threshold |
+| **Moisture** |
+| `LIFT_TEMPERATURE_DROP` | 30.0 | K | Adiabatic cooling during ascent |
+| `MOISTURE_SURVIVE_FRACTION` | 0.3 | - | Fraction reaching upper layer |
+| `LIFT_FRACTION` | 0.1 | - | Fraction of surface M lifted |
+| `DESCENT_DRYING_SCALE` | 2.0 | - | Saturation multiplier per descent |
+| **Upper Transport** |
+| `UPPER_MERIDIONAL_COEFF` | 2.5×10⁻⁴ | s⁻¹ | Poleward flow rate |
+| `UPPER_ZONAL_COEFF` | 5×10⁻⁵ | s⁻¹ | Zonal pressure flow |
+| `WESTERLY_BIAS_STRENGTH` | 2×10⁻⁵ | s⁻¹ | Jet stream analog |
+| **Numerical** |
+| `U_FLOOR` | 0.3 | - | Minimum upper mass |
+| `U_FLOOR_RESTORATION_RATE` | 0.5 | s⁻¹ | Floor restoration rate |
+| `U_INITIAL` | 1.0 | - | Initial upper mass |
+| `M_UP_INITIAL` | 0.05 | kg/m² | Initial upper moisture |
+| **Temperature (Phase 2)** |
+| `T_UP_INITIAL` | 250.0 | K | Initial upper temperature |
+| `T_UP_EQUILIBRIUM` | 240.0 | K | Radiative equilibrium |
+| `UPPER_LAYER_HEAT_CAPACITY` | 1×10⁷ | J·m⁻²·K⁻¹ | Upper layer heat capacity |
+| `UPPER_RADIATIVE_COOLING_RATE` | 2×10⁻⁶ | s⁻¹ | Radiative relaxation |
+| `ASCENT_HEAT_TRANSFER_FRACTION` | 0.3 | - | Heat transfer efficiency |
+| `DESCENT_ADIABATIC_WARMING` | 30.0 | K | Warming during descent |
+
+**Source Code**: `src/archived/twolayer/constants_twolayer.jl`
+
+## Circulation Patterns
+
+The two-layer model produces realistic atmospheric patterns:
+
+### Hadley-Like Circulation
+
+1. **Tropics (0-30°)**:
+   - Strong surface heating → convective ascent
+   - Rising air → precipitation (ITCZ analog)
+   - Upper layer accumulates mass (U > 1)
+
+2. **Subtropics (30-40°)**:
+   - Upper layer mass flows poleward
+   - Descent zones → high pressure → arid conditions
+   - Descent drying → desert formation
+
+3. **Mid-latitudes (40-60°)**:
+   - Transitional zone
+   - Zonal westerlies in upper layer
+   - Variable precipitation
+
+4. **Polar regions (60-90°)**:
+   - Polar sink → strong descent
+   - Cold, dry conditions
+   - Surface easterlies (implicit)
+
+### Monsoon Dynamics
+
+Seasonal or diurnal heating variations can produce monsoon-like circulations:
+
+- **Summer/Day**: Land heats → ascent over land → moist ocean air advects → heavy precipitation
+- **Winter/Night**: Land cools → subsidence → dry conditions
+
+## Why Archived?
+
+The two-layer implementation faces challenges:
+
+1. **Parameter Sensitivity**: Small changes in ascent/descent rates cause instability
+2. **Timescale Separation**: Vertical exchange (hours) vs horizontal transport (days)
+3. **Mass Conservation**: Ensuring $U$ remains physical requires careful numerical treatment
+4. **Tuning Complexity**: 15+ interdependent parameters
+
+Future work may re-enable this with:
+- Adaptive timestepping for stiff ODEs
+- Better initial conditions
+- Simplified parameterizations
+
+## Related Pages
+
+- [Moisture Dynamics](/physics/moisture-dynamics) - Surface moisture physics
+- [Heat Transport](/physics/heat-transport) - Horizontal energy redistribution
+- [Simulation Modes](/concepts/simulation-modes) - Running two-layer experiments (when enabled)

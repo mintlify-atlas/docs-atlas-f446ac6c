@@ -1,0 +1,487 @@
+---
+title: 'Terrain Generation'
+description: 'Fractal noise terrain generation and elevation-based transport coefficients'
+---
+
+## Overview
+
+The terrain generation module creates realistic planetary surfaces using fractal Brownian motion (fBm) noise. It also computes how elevation differences affect heat and moisture transport between grid cells.
+
+Terrain influences:
+- **Heat capacity**: Oceans store more heat than mountains
+- **Transport barriers**: Mountains block heat and moisture flow
+- **Downslope flow**: Heat and moisture preferentially flow downhill
+- **Ocean currents**: Enhanced heat transport in ocean cells
+
+---
+
+## create_fractal_noise_sampler
+
+Create a 3D fractal Brownian motion sampler for terrain generation.
+
+```julia
+create_fractal_noise_sampler(; seed=42, octaves=3, persistence=0.5)
+```
+
+<ParamField path="seed" type="Int" default={42}>
+  Random seed for reproducible terrain generation
+</ParamField>
+
+<ParamField path="octaves" type="Int" default={3}>
+  Number of noise octaves to combine (more octaves = more detail)
+</ParamField>
+
+<ParamField path="persistence" type="Float64" default={0.5}>
+  Amplitude decay between octaves (0.5 = each octave is half the amplitude of previous)
+</ParamField>
+
+<ResponseField name="return" type="Sampler">
+  A 3D noise sampler object that can be passed to `sample_terrain_elevation`
+</ResponseField>
+
+### Fractal Parameters
+
+- **Lacunarity**: Fixed at 2.0 (frequency doubles each octave)
+- **Octaves**: Controls detail level (3-5 recommended for planetary terrain)
+- **Persistence**: Controls roughness (0.5 = balanced, higher = rougher)
+
+### Example
+
+```julia
+# Create terrain with default settings
+sampler = create_fractal_noise_sampler()
+
+# Create highly detailed terrain
+detailed_sampler = create_fractal_noise_sampler(
+    seed=12345,
+    octaves=5,
+    persistence=0.6
+)
+
+# Create smoother terrain
+smooth_sampler = create_fractal_noise_sampler(
+    octaves=2,
+    persistence=0.4
+)
+```
+
+---
+
+## sample_terrain_elevation
+
+Sample elevation at a geographic coordinate using the fractal noise sampler.
+
+```julia
+sample_terrain_elevation(lat::Float64, lon::Float64, sampler; 
+                         sea_level=0.1, scale=0.02)
+```
+
+<ParamField path="lat" type="Float64" required>
+  Latitude in degrees (range: -90 to 90)
+</ParamField>
+
+<ParamField path="lon" type="Float64" required>
+  Longitude in degrees (range: -180 to 180 or 0 to 360)
+</ParamField>
+
+<ParamField path="sampler" type="Sampler" required>
+  3D noise sampler created by `create_fractal_noise_sampler`
+</ParamField>
+
+<ParamField path="sea_level" type="Float64" default={0.1}>
+  Noise threshold for ocean/land boundary (higher = more ocean)
+</ParamField>
+
+<ParamField path="scale" type="Float64" default={0.02}>
+  Spatial frequency of terrain features (smaller = larger continents)
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Elevation where negative = ocean, positive = land (normalized to approximately -1 to 1)
+</ResponseField>
+
+### Cylindrical Projection
+
+Uses cylindrical coordinates to ensure seamless longitude wrapping:
+
+```julia
+x = lat * scale
+y = cos(lon_rad) * 90.0 * scale
+z = sin(lon_rad) * 90.0 * scale
+```
+
+This prevents visible seams at the date line (±180° longitude).
+
+### Elevation Interpretation
+
+| Elevation Range | Terrain Type | Biome Examples |
+|-----------------|--------------|----------------|
+| < 0.0 | Ocean | Deep ocean, shallow seas |
+| 0.0 to 0.15 | Coastal wetlands | Swamps, river deltas |
+| 0.15 to 0.5 | Low-elevation land | Plains, forests, grasslands |
+| > 0.5 | Mountains | Alpine, peaks, highlands |
+
+### Example
+
+```julia
+# Create terrain
+sampler = create_fractal_noise_sampler(seed=42)
+
+# Sample at equator, prime meridian
+elev = sample_terrain_elevation(0.0, 0.0, sampler)
+
+# Check terrain type
+if elev < 0.0
+    println("Ocean cell")
+elseif elev > 0.5
+    println("Mountain cell")
+else
+    println("Land cell")
+end
+
+# Generate 2D grid
+n_lat, n_lon = 90, 180
+terrain = zeros(n_lat, n_lon)
+for i in 1:n_lat
+    for j in 1:n_lon
+        lat = (i - n_lat/2) * (180.0 / n_lat)
+        lon = (j - 1) * (360.0 / n_lon) - 180.0
+        terrain[i, j] = sample_terrain_elevation(lat, lon, sampler)
+    end
+end
+```
+
+---
+
+## Transport Coefficient Functions
+
+These functions compute how elevation differences modify heat and moisture transport between neighboring grid cells.
+
+### compute_slope_barrier_factor
+
+Calculate how steep slopes reduce transport in all directions.
+
+```julia
+compute_slope_barrier_factor(Δelev::Real)
+```
+
+<ParamField path="delta_elev" type="Real" required>
+  Elevation difference (neighbor - self), denoted as Δelev
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Transport multiplier (1.0 = no barrier, 0.0 = complete blocking)
+</ResponseField>
+
+Formula: `1.0 / (1.0 + SLOPE_BARRIER_STRENGTH × Δelev²)`
+
+Where `SLOPE_BARRIER_STRENGTH = 4.0` for heat.
+
+---
+
+### compute_downslope_flow_bonus
+
+Calculate asymmetric transport boost for downhill flow.
+
+```julia
+compute_downslope_flow_bonus(Δelev::Real)
+```
+
+<ParamField path="delta_elev" type="Real" required>
+  Elevation difference (neighbor - self), denoted as Δelev
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Asymmetry factor (> 1 for downhill, < 1 for uphill)
+</ResponseField>
+
+Formula: `1.0 - DOWNSLOPE_STRENGTH × tanh(Δelev × SLOPE_SCALE)`
+
+- Positive Δelev (neighbor higher) → downhill flow → bonus > 1
+- Negative Δelev (neighbor lower) → uphill flow → penalty < 1
+
+---
+
+### compute_directional_heat_transport_modifier
+
+Calculate combined transport coefficient for heat flow from neighbor to self.
+
+```julia
+compute_directional_heat_transport_modifier(elev_self::Float64, 
+                                           elev_neighbor::Float64)
+```
+
+<ParamField path="elev_self" type="Float64" required>
+  Elevation of the target cell
+</ParamField>
+
+<ParamField path="elev_neighbor" type="Float64" required>
+  Elevation of the source cell
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Combined transport coefficient multiplier
+</ResponseField>
+
+Combines barrier effect and downslope preference:
+
+```julia
+Δelev = elev_neighbor - elev_self
+barrier = compute_slope_barrier_factor(Δelev)
+asymmetry = compute_downslope_flow_bonus(Δelev)
+return barrier * asymmetry
+```
+
+### Example
+
+```julia
+# Heat flows downhill from mountain (elev=0.8) to valley (elev=0.2)
+modifier = compute_directional_heat_transport_modifier(0.2, 0.8)
+# Returns > 1.0 (enhanced downhill flow)
+
+# Heat flows uphill from valley to mountain
+modifier = compute_directional_heat_transport_modifier(0.8, 0.2)
+# Returns < 1.0 (reduced uphill flow)
+```
+
+---
+
+### compute_directional_moisture_transport_modifier
+
+Calculate transport coefficient for moisture flow between cells.
+
+```julia
+compute_directional_moisture_transport_modifier(elev_self::Float64,
+                                               elev_neighbor::Float64)
+```
+
+<ParamField path="elev_self" type="Float64" required>
+  Elevation of the target cell
+</ParamField>
+
+<ParamField path="elev_neighbor" type="Float64" required>
+  Elevation of the source cell
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Moisture transport coefficient multiplier
+</ResponseField>
+
+### Difference from Heat Transport
+
+Mountains block moisture **more strongly** than heat:
+
+| Constant | Heat | Moisture |
+|----------|------|----------|
+| Barrier strength | 4.0 | 8.0 |
+| Downslope preference | 0.4 | 0.3 |
+| Slope sensitivity | 3.0 | 3.0 |
+
+This creates rain shadows on the lee side of mountain ranges.
+
+<Warning>
+  Moisture transport is blocked more aggressively than heat transport. Mountain ranges create strong rain shadow effects with dry regions on the downwind side.
+</Warning>
+
+---
+
+### is_ocean_cell
+
+Check if a cell is ocean based on elevation.
+
+```julia
+is_ocean_cell(elevation::Real)
+```
+
+<ParamField path="elevation" type="Real" required>
+  Elevation value from terrain generation
+</ParamField>
+
+<ResponseField name="return" type="Bool">
+  `true` if elevation < 0.0, `false` otherwise
+</ResponseField>
+
+Simple threshold check: ocean cells have negative elevation.
+
+---
+
+### compute_ocean_transport_multiplier
+
+Return transport bonus for ocean cells.
+
+```julia
+compute_ocean_transport_multiplier(elevation::Real)
+```
+
+<ParamField path="elevation" type="Real" required>
+  Elevation value from terrain generation
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  1.5 if ocean cell, 1.0 if land
+</ResponseField>
+
+Ocean currents transport heat 50% more efficiently than land conduction.
+
+Constant: `OCEAN_TRANSPORT_BONUS = 1.5`
+
+---
+
+## Heat Capacity Functions
+
+### compute_convection_activation
+
+Calculate temperature-dependent convection activation factor.
+
+```julia
+compute_convection_activation(T_avg::Real)
+```
+
+<ParamField path="T_avg" type="Real" required>
+  Average temperature in Kelvin
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Activation factor from 0.0 (cold, no convection) to 1.0 (warm, full convection)
+</ResponseField>
+
+Formula: `0.5 × (1 + tanh((T - 270K) / 20K))`
+
+Smooth transition:
+- Below 250K: activation ≈ 0 (conduction only)
+- At 270K: activation = 0.5
+- Above 290K: activation ≈ 1 (full convection)
+
+---
+
+### compute_heat_transport_coefficient
+
+Calculate total heat transport coefficient including convection.
+
+```julia
+compute_heat_transport_coefficient(T_avg::Real)
+```
+
+<ParamField path="T_avg" type="Real" required>
+  Average temperature in Kelvin
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Heat transport coefficient in W·m⁻²·K⁻¹
+</ResponseField>
+
+Formula:
+
+```julia
+activation = compute_convection_activation(T_avg)
+return 15.0 + 30.0 * activation
+```
+
+- Cold regions (< 250K): 15 W·m⁻²·K⁻¹ (conduction only)
+- Warm regions (> 290K): 45 W·m⁻²·K⁻¹ (conduction + convection)
+
+### Example
+
+```julia
+# Cold region (polar)
+K_cold = compute_heat_transport_coefficient(240.0)
+# ≈ 15 W·m⁻²·K⁻¹
+
+# Warm region (equatorial)
+K_warm = compute_heat_transport_coefficient(300.0)
+# ≈ 45 W·m⁻²·K⁻¹
+```
+
+---
+
+## Populate Transport Coefficients
+
+These functions pre-compute transport coefficients for all grid cells and neighbors, improving simulation performance.
+
+### populate_heat_transport_coefficients!
+
+Fill a 3D array with directional heat transport coefficients.
+
+```julia
+populate_heat_transport_coefficients!(transport_coeffs::Array{Float64,3},
+                                      elevation::Matrix{Float64},
+                                      n_lat::Int, n_lon::Int)
+```
+
+<ParamField path="transport_coeffs" type="Array{Float64,3}" required>
+  Output array with dimensions `[n_lat, n_lon, 4]` to be filled
+</ParamField>
+
+<ParamField path="elevation" type="Matrix{Float64}" required>
+  Terrain elevation matrix `[n_lat, n_lon]`
+</ParamField>
+
+<ParamField path="n_lat" type="Int" required>
+  Number of latitude bands
+</ParamField>
+
+<ParamField path="n_lon" type="Int" required>
+  Number of longitude bands
+</ParamField>
+
+### Direction Indexing
+
+The third dimension represents cardinal directions:
+
+1. **North** (i-1): Flow from cell above
+2. **South** (i+1): Flow from cell below  
+3. **East** (j+1): Flow from cell to the right (longitude wraps)
+4. **West** (j-1): Flow from cell to the left (longitude wraps)
+
+Boundary conditions:
+- Polar boundaries (i=1, i=n_lat): Coefficient = 0.0
+- Longitude wraps using `mod1(j ± 1, n_lon)`
+
+### Example
+
+```julia
+n_lat, n_lon = 90, 180
+elevation = ... # Generated terrain
+transport_coeffs = zeros(n_lat, n_lon, 4)
+
+populate_heat_transport_coefficients!(
+    transport_coeffs, elevation, n_lat, n_lon
+)
+
+# Access transport from north neighbor to cell [45, 90]
+K_from_north = transport_coeffs[45, 90, 1]
+```
+
+---
+
+### populate_moisture_transport_coefficients!
+
+Fill a 3D array with directional moisture transport coefficients.
+
+```julia
+populate_moisture_transport_coefficients!(coeffs::Array{Float64,3},
+                                         elevation::Matrix{Float64},
+                                         n_lat::Int, n_lon::Int)
+```
+
+Parameters and indexing are identical to `populate_heat_transport_coefficients!`, but uses the moisture-specific barrier function with stronger mountain blocking.
+
+---
+
+## Constants
+
+Terrain generation and transport use these constants:
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SLOPE_BARRIER_STRENGTH` | 4.0 | Heat transport barrier from slopes |
+| `MOISTURE_BARRIER_STRENGTH` | 8.0 | Moisture transport barrier (stronger) |
+| `DOWNSLOPE_STRENGTH` | 0.4 | Heat downslope preference |
+| `MOISTURE_DOWNSLOPE_PREFERENCE` | 0.3 | Moisture downslope preference |
+| `SLOPE_SCALE` | 3.0 | Slope sensitivity parameter |
+| `OCEAN_TRANSPORT_BONUS` | 1.5 | Ocean heat transport multiplier |
+| `HEAT_TRANSPORT_BASE` | 15.0 W·m⁻²·K⁻¹ | Conductive heat transport |
+| `HEAT_TRANSPORT_CONVECTION` | 30.0 W·m⁻²·K⁻¹ | Convective heat transport |
+| `CONVECTION_THRESHOLD` | 270.0 K | Temperature for 50% convection |
+
+See `src/constants.jl` for complete parameter definitions.

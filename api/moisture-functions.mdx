@@ -1,0 +1,403 @@
+---
+title: Moisture Functions
+description: Functions for computing saturation moisture, evaporation, precipitation, and latent heat
+---
+
+## Overview
+
+Moisture physics functions handle the water cycle: evaporation from oceans, atmospheric moisture transport, and orographic precipitation. These functions implement the Clausius-Clapeyron relation for saturation vapor pressure, temperature-dependent evaporation, and elevation-induced precipitation.
+
+---
+
+## Saturation and Capacity
+
+### compute_saturation_moisture_at_temperature
+
+Compute saturation moisture capacity using Clausius-Clapeyron relation.
+
+```julia
+compute_saturation_moisture_at_temperature(T::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Temperature in Kelvin
+</ParamField>
+
+<ResponseField name="saturation_moisture" type="Float64">
+  Saturation moisture capacity in kg/m² (column-integrated)
+</ResponseField>
+
+**Implementation Details**
+
+- Warmer air holds more moisture, colder air holds less
+- Reference: at T = 273 K, returns `MOISTURE_REF_SATURATION` (5.0 kg/m²)
+- Uses exponential scaling based on Clausius-Clapeyron equation
+- Formula: `MOISTURE_REF_SATURATION * exp(scale * (T - 273) / 273)`
+- `CLAUSIUS_CLAPEYRON_SCALE ≈ 18.0` (empirical scaling factor)
+- Exponent clamped to [-10, 10] for numerical stability
+
+**Example**
+
+```julia
+# Freezing point
+M_sat = compute_saturation_moisture_at_temperature(273.0)  # 5.0 kg/m²
+
+# Cold arctic air
+M_sat = compute_saturation_moisture_at_temperature(250.0)  # ~0.5 kg/m²
+
+# Warm tropical air
+M_sat = compute_saturation_moisture_at_temperature(300.0)  # ~30 kg/m²
+
+# Very hot
+M_sat = compute_saturation_moisture_at_temperature(320.0)  # ~150 kg/m²
+```
+
+---
+
+## Evaporation
+
+### can_evaporate
+
+Check if conditions allow evaporation (ocean cell above threshold temperature).
+
+```julia
+can_evaporate(T::Real, elevation::Real) -> Bool
+```
+
+<ParamField path="T" type="Real" required>
+  Surface temperature in Kelvin
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation (negative = ocean, positive = land)
+</ParamField>
+
+<ResponseField name="can_evaporate" type="Bool">
+  True if evaporation is possible, false otherwise
+</ResponseField>
+
+**Implementation Details**
+
+- Requires TWO conditions:
+  1. Ocean cell: `elevation < 0.0`
+  2. Warm enough: `T > EVAP_THRESHOLD` (~273 K)
+- Land cells never evaporate (simplified model)
+- Cold ocean doesn't evaporate significantly
+
+**Example**
+
+```julia
+# Warm ocean - evaporates
+can_evaporate(290.0, -0.5)  # true
+
+# Cold ocean - no evaporation
+can_evaporate(260.0, -0.3)  # false
+
+# Warm land - no evaporation
+can_evaporate(290.0, 0.2)   # false
+
+# Lake/river (positive elevation) - no evaporation
+can_evaporate(285.0, 0.05)  # false
+```
+
+---
+
+### compute_ocean_evaporation_rate
+
+Calculate evaporation rate from ocean surface.
+
+```julia
+compute_ocean_evaporation_rate(T::Real, elevation::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Surface temperature in Kelvin
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation (negative = ocean)
+</ParamField>
+
+<ResponseField name="evaporation_rate" type="Float64">
+  Evaporation rate in kg/(m²·s)
+</ResponseField>
+
+**Implementation Details**
+
+- Returns 0 if evaporation conditions not met (via `can_evaporate`)
+- Linear scaling with temperature above threshold
+- Formula: `EVAP_RATE * (T - EVAP_THRESHOLD)`
+- `EVAP_RATE ≈ 1e-5` kg/(m²·s·K) (tunable parameter)
+- `EVAP_THRESHOLD ≈ 273.0` K (freezing point)
+- Hotter oceans evaporate faster
+
+**Example**
+
+```julia
+# Cold ocean - no evaporation
+evap = compute_ocean_evaporation_rate(270.0, -0.4)  # 0.0
+
+# Just above threshold
+evap = compute_ocean_evaporation_rate(275.0, -0.5)  # ~2e-5 kg/(m²·s)
+
+# Warm tropical ocean
+evap = compute_ocean_evaporation_rate(300.0, -0.3)  # ~2.7e-4 kg/(m²·s)
+
+# Land (even if warm)
+evap = compute_ocean_evaporation_rate(300.0, 0.2)   # 0.0
+```
+
+---
+
+## Precipitation
+
+### compute_temperature_at_altitude
+
+Calculate temperature at altitude using lapse rate.
+
+```julia
+compute_temperature_at_altitude(T_surface::Real, elevation::Real) -> Float64
+```
+
+<ParamField path="T_surface" type="Real" required>
+  Surface temperature in Kelvin
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation (0.0 = sea level, 1.0 = highest mountains)
+</ParamField>
+
+<ResponseField name="T_altitude" type="Float64">
+  Temperature at the given altitude in Kelvin
+</ResponseField>
+
+**Implementation Details**
+
+- Only positive elevations (land) contribute to cooling
+- Ocean cells (negative elevation) use surface temperature
+- `ELEVATION_SCALE ≈ 5000.0` m (converts normalized elevation to meters)
+- `LAPSE_RATE ≈ 0.0065` K/m (standard atmospheric lapse rate)
+- Formula: `T_surface - LAPSE_RATE * max(0, elevation) * ELEVATION_SCALE`
+- At elevation = 1.0 (highest mountains), cooling ≈ 32.5 K
+
+**Example**
+
+```julia
+# Sea level
+T_alt = compute_temperature_at_altitude(288.0, 0.0)   # 288.0 K
+
+# Mid-elevation (2500m)
+T_alt = compute_temperature_at_altitude(288.0, 0.5)   # ~271.8 K
+
+# High mountain (5000m)
+T_alt = compute_temperature_at_altitude(288.0, 1.0)   # ~255.5 K
+
+# Ocean (negative elevation)
+T_alt = compute_temperature_at_altitude(288.0, -0.3)  # 288.0 K (no cooling)
+```
+
+---
+
+### compute_orographic_precipitation_rate
+
+Calculate precipitation rate based on orographic cooling.
+
+```julia
+compute_orographic_precipitation_rate(moisture::Real, T::Real, elevation::Real) -> Float64
+```
+
+<ParamField path="moisture" type="Real" required>
+  Current atmospheric moisture in kg/m²
+</ParamField>
+
+<ParamField path="T" type="Real" required>
+  Surface temperature in Kelvin
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation
+</ParamField>
+
+<ResponseField name="precipitation_rate" type="Float64">
+  Precipitation rate in kg/(m²·s)
+</ResponseField>
+
+**Implementation Details**
+
+- When moisture exceeds saturation capacity at altitude, precipitation occurs
+- Higher elevations are colder → lower saturation capacity → more precipitation
+- Creates rain shadows: windward slopes get rain, leeward slopes stay dry
+- Returns 0 if moisture ≤ 0 or moisture ≤ saturation
+- Formula: `PRECIP_RATE * (moisture - M_sat_altitude)`
+- `PRECIP_RATE ≈ 1e-4` s⁻¹ (relaxation timescale ~10,000 seconds)
+- Precipitation removes excess moisture above saturation
+
+**Example**
+
+```julia
+# Low elevation, high moisture - no precipitation (warm air holds it)
+precip = compute_orographic_precipitation_rate(20.0, 288.0, 0.0)  # 0.0
+
+# High elevation, high moisture - precipitation (cold air can't hold it)
+precip = compute_orographic_precipitation_rate(20.0, 288.0, 0.8)  # ~0.002 kg/(m²·s)
+
+# High elevation, low moisture - no precipitation
+precip = compute_orographic_precipitation_rate(2.0, 288.0, 0.8)   # 0.0
+
+# Dry air
+precip = compute_orographic_precipitation_rate(0.0, 288.0, 0.5)   # 0.0
+```
+
+---
+
+## Latent Heat
+
+### compute_latent_heat_flux
+
+Calculate net latent heat flux from phase changes.
+
+```julia
+compute_latent_heat_flux(precipitation::Real, evaporation::Real) -> Float64
+```
+
+<ParamField path="precipitation" type="Real" required>
+  Precipitation rate in kg/(m²·s)
+</ParamField>
+
+<ParamField path="evaporation" type="Real" required>
+  Evaporation rate in kg/(m²·s)
+</ParamField>
+
+<ResponseField name="heat_flux" type="Float64">
+  Net latent heat flux in W/m² (positive = heating)
+</ResponseField>
+
+**Implementation Details**
+
+- Precipitation releases latent heat (condensation warms surface)
+- Evaporation absorbs latent heat (evaporation cools surface)
+- `LATENT_HEAT ≈ 2.5e6` J/kg (heat of vaporization for water)
+- Formula: `LATENT_HEAT * (precipitation - evaporation)`
+- Positive flux → surface warming
+- Negative flux → surface cooling
+
+**Example**
+
+```julia
+# Balanced (no net heat transfer)
+Q_latent = compute_latent_heat_flux(1e-4, 1e-4)  # 0.0 W/m²
+
+# Net precipitation (condensation releases heat)
+Q_latent = compute_latent_heat_flux(2e-4, 1e-4)  # +250 W/m²
+
+# Net evaporation (evaporation absorbs heat)
+Q_latent = compute_latent_heat_flux(1e-4, 3e-4)  # -500 W/m²
+
+# Heavy tropical precipitation
+Q_latent = compute_latent_heat_flux(5e-4, 1e-4)  # +1000 W/m²
+```
+
+---
+
+## Usage in Simulation
+
+Typical moisture cycle in the ODE solver:
+
+```julia
+function moisture_derivatives!(dM, M, T, elevation, i, j)
+    # 1. Evaporation (source term for ocean cells)
+    evap_rate = compute_ocean_evaporation_rate(T[i,j], elevation[i,j])
+    
+    # 2. Precipitation (sink term when exceeding saturation)
+    precip_rate = compute_orographic_precipitation_rate(M[i,j], T[i,j], elevation[i,j])
+    
+    # 3. Transport (diffusion between cells)
+    transport = compute_moisture_transport(M, i, j)  # Uses transport coefficients
+    
+    # 4. Net moisture change
+    dM[i,j] = evap_rate - precip_rate + transport
+    
+    # 5. Latent heat affects temperature
+    Q_latent = compute_latent_heat_flux(precip_rate, evap_rate)
+    dT[i,j] += Q_latent / heat_capacity
+end
+```
+
+---
+
+## Physical Coupling
+
+Moisture affects temperature through multiple pathways:
+
+1. **Latent heat**: Evaporation cools, precipitation warms
+2. **Greenhouse effect**: Water vapor increases IR optical depth
+3. **Heat capacity**: Moist regions (wetlands, forests) have higher thermal inertia
+
+```julia
+# Temperature equation with moisture coupling
+function temperature_derivative(T, M, elevation, ...)
+    # Solar input
+    Q_solar = compute_solar_input(...)
+    
+    # Infrared loss (moisture affects greenhouse)
+    τ = compute_total_ir_optical_depth(M)  # M increases optical depth
+    transmissivity = compute_ir_transmissivity_from_optical_depth(τ)
+    Q_out = compute_outgoing_longwave_radiation(T, transmissivity)
+    
+    # Latent heat
+    evap = compute_ocean_evaporation_rate(T, elevation)
+    precip = compute_orographic_precipitation_rate(M, T, elevation)
+    Q_latent = compute_latent_heat_flux(precip, evap)
+    
+    # Heat capacity (moisture affects via biomes)
+    heat_capacity = compute_biome_blended_heat_capacity(T, M, elevation)
+    
+    # Net temperature change
+    dT/dt = (Q_solar - Q_out + Q_latent + Q_transport) / heat_capacity
+end
+```
+
+---
+
+## Physical Constants
+
+Key constants used by moisture functions (defined in `constants.jl`):
+
+- `MOISTURE_REF_SATURATION = 5.0` kg/m² (saturation at 273 K)
+- `MOISTURE_REF_TEMP = 273.15` K (reference temperature)
+- `CLAUSIUS_CLAPEYRON_SCALE = 18.0` (dimensionless)
+- `EVAP_RATE ≈ 1e-5` kg/(m²·s·K)
+- `EVAP_THRESHOLD ≈ 273.0` K
+- `PRECIP_RATE ≈ 1e-4` s⁻¹
+- `LAPSE_RATE = 0.0065` K/m
+- `ELEVATION_SCALE = 5000.0` m
+- `LATENT_HEAT = 2.5e6` J/kg
+
+---
+
+## Rain Shadow Example
+
+The orographic precipitation creates realistic rain shadows:
+
+```julia
+# Windward slope (west side of mountain)
+elevation_west = 0.2  # Low elevation
+T_west = 288.0        # Warm
+M_west = 25.0         # Moist (from ocean)
+precip_west = compute_orographic_precipitation_rate(M_west, T_west, elevation_west)
+# → Low precipitation (warm air holds moisture)
+
+# Mountain peak
+elevation_peak = 0.9   # High elevation
+T_peak = 288.0         # Surface temp (will cool at altitude)
+M_peak = 20.0          # Slightly drier (lost some to west slope)
+precip_peak = compute_orographic_precipitation_rate(M_peak, T_peak, elevation_peak)
+# → Heavy precipitation (cold air can't hold moisture)
+
+# Leeward slope (east side - rain shadow)
+elevation_east = 0.2   # Low elevation
+T_east = 288.0         # Warm
+M_east = 5.0           # Very dry (lost moisture on mountain)
+precip_east = compute_orographic_precipitation_rate(M_east, T_east, elevation_east)
+# → No precipitation (air is dry)
+```

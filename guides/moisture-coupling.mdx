@@ -1,0 +1,419 @@
+---
+title: 'Moisture-Coupled Simulations'
+description: 'How to run simulations with evaporation, precipitation, and biomes'
+---
+
+Moisture-coupled simulations extend the 2D temperature model by adding atmospheric water vapor dynamics. This enables realistic precipitation patterns, rain shadow effects, biome classification, and latent heat transport.
+
+## Physics Overview
+
+<Info>
+  **Moisture coupling adds:**
+  - **Evaporation**: Ocean/wetland cells evaporate water when warm (> 0°C)
+  - **Precipitation**: Orographic precipitation when moisture rises over mountains
+  - **Moisture transport**: Diffusion with mountain barriers (stronger than heat blocking)
+  - **Latent heat**: Evaporation cools, condensation warms
+  - **Biome classification**: Based on temperature, moisture, and elevation
+</Info>
+
+The state vector doubles in size: `[T[1], ..., T[N], M[1], ..., M[N]]` where T is temperature and M is column-integrated moisture (kg/m²).
+
+## Basic Moisture Simulation
+
+<Steps>
+  <Step title="Create the moon with terrain">
+    Initialize a 2D moon with appropriate terrain parameters:
+
+    ```julia
+    using HotMoon
+    using Statistics
+    
+    N_LAT = 90
+    N_LON = 180
+    
+    moon = HotMoonBody(
+        N_LAT, N_LON,
+        seed=32,
+        sea_level=0.05,   # More ocean for evaporation
+        scale=0.01,
+        octaves=5
+    )
+    
+    println(moon)
+    println("  Total cells: $(moon.n_lat * moon.n_lon)")
+    ```
+
+    <Tip>
+      Higher `sea_level` (0.05-0.15) creates more ocean, which drives the moisture cycle through evaporation.
+    </Tip>
+  </Step>
+
+  <Step title="Calculate ocean coverage">
+    Verify you have sufficient ocean cells:
+
+    ```julia
+    ocean_cells = sum(moon.elevation .< 0)
+    ocean_pct = 100 * ocean_cells / (moon.n_lat * moon.n_lon)
+    println("  Ocean coverage: $(round(ocean_pct, digits=1))%")
+    ```
+
+    Aim for 30-70% ocean coverage for interesting climate patterns.
+  </Step>
+
+  <Step title="Initialize temperature and moisture">
+    Use the built-in estimator for physically consistent initial conditions:
+
+    ```julia
+    println("\nEstimating initial state from equilibrium conditions...")
+    T0, M0 = estimate_initial_temperature_and_moisture(moon)
+    
+    println("Initial temperature range: $(round(minimum(T0) - 273.15, digits=1))°C to $(round(maximum(T0) - 273.15, digits=1))°C")
+    println("Initial moisture range: $(round(minimum(M0), digits=2)) to $(round(maximum(M0), digits=2)) kg/m²")
+    ```
+
+    This function estimates T and M based on:
+    - Solar heating by latitude
+    - Elevation lapse rate
+    - Moisture capacity from Clausius-Clapeyron
+    - Ocean cell enhancement
+  </Step>
+
+  <Step title="Run coupled simulation">
+    Execute using the moisture-coupled solver:
+
+    ```julia
+    SIM_HOURS = 15000.0
+    
+    println("\nRunning coupled T-M simulation for $(round(Int, SIM_HOURS)) hours...")
+    progress = make_progress_callback(SIM_HOURS, update_interval_hours=100)
+    @time sol = run_simulation_with_moisture(moon, SIM_HOURS, T0, M0, callback=progress)
+    println()
+    ```
+
+    <Warning>
+      Moisture simulations are ~2x slower than temperature-only due to doubled state size and additional physics.
+    </Warning>
+  </Step>
+
+  <Step title="Extract final fields">
+    Split the solution vector back into T and M:
+
+    ```julia
+    n_cells = moon.n_lat * moon.n_lon
+    T_final = reshape(sol.u[end][1:n_cells], moon.n_lat, moon.n_lon)
+    M_final = reshape(sol.u[end][n_cells+1:end], moon.n_lat, moon.n_lon)
+    T_final_C = T_final .- 273.15
+    ```
+
+    The first `n_cells` elements are temperature, the second half are moisture.
+  </Step>
+
+  <Step title="Compute precipitation">
+    Calculate instantaneous precipitation rates:
+
+    ```julia
+    precip_final = zeros(moon.n_lat, moon.n_lon)
+    for i in 1:moon.n_lat
+        for j in 1:moon.n_lon
+            precip_final[i, j] = compute_orographic_precipitation_rate(
+                M_final[i, j], 
+                T_final[i, j], 
+                moon.elevation[i, j]
+            )
+        end
+    end
+    precip_mm_hr = precip_final .* 3600  # Convert kg/(m²·s) to mm/hr
+    
+    println("Mean precip rate: $(round(mean(precip_mm_hr), digits=3)) mm/hr")
+    println("Max precip rate:  $(round(maximum(precip_mm_hr), digits=3)) mm/hr")
+    ```
+  </Step>
+
+  <Step title="Analyze biomes">
+    Print biome distribution statistics:
+
+    ```julia
+    print_biome_statistics(T_final, M_final, moon)
+    ```
+
+    This shows area-weighted percentages for all 12 biome types.
+  </Step>
+
+  <Step title="Save results with terrain metadata">
+    Include terrain parameters for reproducibility:
+
+    ```julia
+    config = RunConfig("2d_moisture")
+    ctx = initialize_run(config)
+    
+    terrain_params = (
+        seed=32, 
+        sea_level=0.05,
+        scale=0.01, 
+        octaves=5
+    )
+    
+    save_results!(ctx, sol, moon, T0=T0, M0=M0, terrain_params=terrain_params)
+    generate_plots!(ctx, sol, moon)
+    generate_animations!(ctx, sol, moon, hours=448, frame_skip=4, fps=10)
+    finalize_run!(ctx)
+    ```
+  </Step>
+</Steps>
+
+## Complete Example Script
+
+```julia
+using Pkg
+Pkg.activate(".")
+
+using Statistics
+
+include("src/HotMoon.jl")
+using .HotMoon
+
+const N_LAT = 90
+const N_LON = 180
+const SIM_HOURS = 15000.0
+
+const TERRAIN_SEED = 32
+const TERRAIN_SEA_LEVEL = 0.05
+const TERRAIN_SCALE = 0.01
+const TERRAIN_OCTAVES = 5
+
+println("="^60)
+println("Hot Moon 2D Climate Simulation (with Moisture)")
+println("="^60)
+
+println("\nCreating moon...")
+moon = HotMoonBody(N_LAT, N_LON, seed=TERRAIN_SEED, sea_level=TERRAIN_SEA_LEVEL,
+                   scale=TERRAIN_SCALE, octaves=TERRAIN_OCTAVES)
+println(moon)
+println("  Total cells: $(moon.n_lat * moon.n_lon)")
+
+ocean_cells = sum(moon.elevation .< 0)
+ocean_pct = 100 * ocean_cells / (moon.n_lat * moon.n_lon)
+println("  Ocean coverage: $(round(ocean_pct, digits=1))%")
+
+println("\nEstimating initial state from equilibrium conditions...")
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+println("Initial temperature range: $(round(minimum(T0) - 273.15, digits=1))°C to $(round(maximum(T0) - 273.15, digits=1))°C")
+println("Initial moisture range: $(round(minimum(M0), digits=2)) to $(round(maximum(M0), digits=2)) kg/m²")
+
+println("\nRunning coupled T-M simulation for $(round(Int, SIM_HOURS)) hours...")
+progress = make_progress_callback(SIM_HOURS, update_interval_hours=100)
+@time sol = run_simulation_with_moisture(moon, SIM_HOURS, T0, M0, callback=progress)
+println()
+
+println("\nSimulation complete!")
+println("  Number of timesteps: $(length(sol.t))")
+println("  Final time: $(sol.t[end]/3600) hours")
+
+n_cells = moon.n_lat * moon.n_lon
+T_final = reshape(sol.u[end][1:n_cells], moon.n_lat, moon.n_lon)
+M_final = reshape(sol.u[end][n_cells+1:end], moon.n_lat, moon.n_lon)
+T_final_C = T_final .- 273.15
+
+global_mean_T = sum(T_final_C .* moon.cell_areas)
+global_min_T = minimum(T_final_C)
+global_max_T = maximum(T_final_C)
+
+println("\n" * "="^60)
+println("TEMPERATURE STATISTICS")
+println("="^60)
+println("  Mean temperature: $(round(global_mean_T, digits=1))°C")
+println("  Min temperature:  $(round(global_min_T, digits=1))°C")
+println("  Max temperature:  $(round(global_max_T, digits=1))°C")
+
+global_mean_M = sum(M_final .* moon.cell_areas)
+global_min_M = minimum(M_final)
+global_max_M = maximum(M_final)
+
+println("\n" * "="^60)
+println("MOISTURE STATISTICS")
+println("="^60)
+println("  Mean moisture: $(round(global_mean_M, digits=2)) kg/m²")
+println("  Min moisture:  $(round(global_min_M, digits=2)) kg/m²")
+println("  Max moisture:  $(round(global_max_M, digits=2)) kg/m²")
+
+precip_final = zeros(moon.n_lat, moon.n_lon)
+for i in 1:moon.n_lat
+    for j in 1:moon.n_lon
+        precip_final[i, j] = compute_orographic_precipitation_rate(M_final[i, j], T_final[i, j], moon.elevation[i, j])
+    end
+end
+precip_mm_hr = precip_final .* 3600
+
+println("\n" * "="^60)
+println("PRECIPITATION STATISTICS")
+println("="^60)
+println("  Mean precip rate: $(round(mean(precip_mm_hr), digits=3)) mm/hr")
+println("  Max precip rate:  $(round(maximum(precip_mm_hr), digits=3)) mm/hr")
+wet_cells = sum(precip_mm_hr .> 0.001)
+wet_pct = 100 * wet_cells / n_cells
+println("  Cells with precipitation: $(round(wet_pct, digits=1))%")
+
+print_biome_statistics(T_final, M_final, moon)
+
+config = RunConfig("2d_moisture")
+ctx = initialize_run(config)
+
+terrain_params = (seed=TERRAIN_SEED, sea_level=TERRAIN_SEA_LEVEL,
+                  scale=TERRAIN_SCALE, octaves=TERRAIN_OCTAVES)
+save_results!(ctx, sol, moon, T0=T0, M0=M0, terrain_params=terrain_params)
+generate_plots!(ctx, sol, moon)
+generate_animations!(ctx, sol, moon, hours=448, frame_skip=4, fps=10)
+finalize_run!(ctx)
+```
+
+## Output Files
+
+Moisture simulations generate extensive output in `output/latest/`:
+
+### Plots (PNG)
+- Temperature: snapshot, hovmoeller, latitude range, global mean
+- Moisture: snapshot, hovmoeller, latitude range, global mean
+- Precipitation: snapshot, hovmoeller, global mean
+- Terrain: elevation map with coastlines
+- Biomes: classification map with legend
+
+### Animations (GIF)
+- **climate_animation.gif** - Combined T/M/P side-by-side
+- **temperature.gif** - Temperature evolution
+- **moisture.gif** - Moisture evolution
+- **precipitation.gif** - Precipitation evolution
+
+## Understanding Moisture Physics
+
+### Evaporation
+
+Evaporation rate scales with temperature above freezing:
+
+```julia
+# From physics/moisture.jl
+evap_rate = EVAP_RATE * max(0.0, T - EVAP_THRESHOLD)
+# EVAP_RATE = 0.3e-5 kg/(m²·s·K)
+# EVAP_THRESHOLD = 273.15 K (0°C)
+```
+
+Only ocean and wetland cells (elevation < 0.15) evaporate water.
+
+### Orographic Precipitation
+
+Precipitation occurs when moisture exceeds saturation capacity:
+
+```julia
+# Precipitation increases with:
+# 1. High moisture content
+# 2. High elevation (forced uplift)
+# 3. Warm temperature (higher saturation capacity, but more margin to exceed)
+precip_rate = PRECIP_RATE * max(0.0, M - saturation_capacity(T, elev))
+# PRECIP_RATE = 0.002 s⁻¹
+```
+
+### Mountain Moisture Barriers
+
+<Info>
+  Mountains block moisture transport **2x stronger** than heat transport:
+  - `MOISTURE_BARRIER_STRENGTH = 8.0`
+  - `SLOPE_BARRIER_STRENGTH = 4.0` (heat)
+
+  This creates rain shadow deserts on lee sides of mountain ranges.
+</Info>
+
+### Latent Heat Coupling
+
+- **Evaporation**: Removes `LATENT_HEAT * evap_rate` from temperature equation
+- **Condensation**: Adds `LATENT_HEAT * precip_rate` to temperature equation
+- `LATENT_HEAT = 2.5e6 J/kg`
+
+This couples the T and M equations beyond simple diffusion.
+
+## Biome Classification
+
+The simulator classifies 12 biome types based on thresholds:
+
+| Biome | Temperature | Moisture | Elevation | Notes |
+|-------|-------------|----------|-----------|-------|
+| Ocean | Any | Any | < 0.0 | Below sea level |
+| Ice Sheet | < -10°C | Any | ≥ 0.0 | Cold land |
+| Tundra | -10 to 10°C | Low-Mod | ≥ 0.0 | Cold, dry |
+| Boreal Forest | -10 to 10°C | Moderate | ≥ 0.0 | Cold, wet |
+| Cold Steppe | 10 to 20°C | Low | ≥ 0.0 | Cool, dry |
+| Temperate Forest | 10 to 20°C | Moderate-High | ≥ 0.0 | Cool, wet |
+| Grassland | 10 to 20°C | Moderate | ≥ 0.0 | Cool, medium |
+| Tropical Forest | > 20°C | High | ≥ 0.0 | Hot, wet |
+| Savanna | > 20°C | Moderate | ≥ 0.0 | Hot, medium |
+| Hot Desert | > 20°C | Low | ≥ 0.0 | Hot, dry |
+| Mountain | Any | Any | > 0.5 | High elevation |
+| Wetland | Any | High | 0.0 to 0.15 | Low coastal |
+
+Access biome classification:
+
+```julia
+biome_id = classify_cell_biome(T_final[i, j], M_final[i, j], moon.elevation[i, j])
+biome_name = BIOME_NAMES[biome_id + 1]  # IDs are 0-indexed
+```
+
+## Common Patterns
+
+### Finding Rain Shadows
+
+```julia
+# Rain shadows: high-elevation areas with low moisture
+rain_shadow_mask = (moon.elevation .> 0.3) .& (M_final .< 2.0)
+rain_shadow_count = sum(rain_shadow_mask)
+println("Rain shadow cells: $rain_shadow_count")
+```
+
+### Tracking Wettest Regions
+
+```julia
+max_M_idx = argmax(M_final)
+wet_lat = moon.latitudes[max_M_idx[1]]
+wet_lon = moon.longitudes[max_M_idx[2]]
+wet_M = M_final[max_M_idx]
+wet_elev = moon.elevation[max_M_idx]
+
+println("Wettest cell: $(round(wet_M, digits=2)) kg/m² at ($wet_lat°, $wet_lon°), elevation=$(round(wet_elev, digits=2))")
+```
+
+### Custom Initial Moisture
+
+```julia
+# Instead of automatic estimation, set manually:
+T0 = fill(285.0, moon.n_lat, moon.n_lon)
+M0 = zeros(moon.n_lat, moon.n_lon)
+
+# Add moisture only over oceans
+for i in 1:moon.n_lat
+    for j in 1:moon.n_lon
+        if moon.elevation[i, j] < 0
+            M0[i, j] = 3.0  # kg/m² over oceans
+        end
+    end
+end
+```
+
+## Performance Considerations
+
+<Warning>
+  Moisture-coupled simulations require:
+  - **2x memory** (doubled state vector)
+  - **2x runtime** (more physics calculations)
+  - **Longer equilibration** (15,000+ hours recommended)
+</Warning>
+
+### Recommended Settings
+
+- **Grid**: Start with 90×180, scale up to 180×360 for publication
+- **Threads**: Use `julia -t 8` for grids > 100×200
+- **Simulation time**: 15,000-20,000 hours for moisture equilibrium
+- **Progress interval**: Update every 100 hours (not too frequent)
+
+## Next Steps
+
+- Understand [terrain generation parameters](/guides/terrain-generation)
+- Create [custom visualizations](/guides/visualization) for moisture and biomes
+- Optimize with [performance tips](/guides/performance)
+- Learn about the [two-layer atmosphere model](/physics/atmospheric-circulation) (advanced)

@@ -1,80 +1,337 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick start
+description: Run your first Hot Moon climate simulation in minutes
 ---
 
-## Get started in three steps
+# Quick start
 
-Get your documentation site running locally and make your first customization.
+This tutorial will guide you through running your first climate simulation with Hot Moon. We'll start with a simple 1D latitude-band model, then explore 2D simulations.
 
-### Step 1: Set up your local environment
+<Note>
+  Make sure you've [installed Hot Moon](/installation) before starting this tutorial.
+</Note>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Your first simulation
+
+Let's run a 1D simulation that models temperature variation across latitude bands.
+
+<Steps>
+  <Step title="Create a simulation script">
+    Create a new file called `my_first_simulation.jl` in the Hot Moon directory:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```julia my_first_simulation.jl
+    using Pkg
+    Pkg.activate(".")
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    include("src/HotMoon.jl")
+    using .HotMoon
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    # Create a 1D moon with 18 latitude bands
+    moon = HotMoonBody(18)
+    println(moon)
+    
+    # Initialize temperature: 285 K (12°C) uniform
+    T0 = fill(285.0, moon.n_lat)
+    
+    # Run simulation for 500 hours
+    println("Running simulation for 500 hours...")
+    sol = run_simulation(moon, 500, T0)
+    
+    println("Simulation complete!")
+    println("  Timesteps: $(length(sol.t))")
+    println("  Final time: $(sol.t[end]/3600) hours")
+    
+    # Display results
+    final_temps = sol.u[end] .- 273.15  # Convert to Celsius
+    println("\nFinal temperatures:")
+    println("  Equator: $(round(final_temps[1], digits=1))°C")
+    println("  Pole: $(round(final_temps[end], digits=1))°C")
+    ```
+  </Step>
+  
+  <Step title="Run the simulation">
+    Execute your script:
+    
+    ```bash
+    julia --project=. my_first_simulation.jl
+    ```
+    
+    You should see output like:
+    ```
+    MoonBody1D(18 latitude bands)
+    Running simulation for 500 hours...
+    Simulation complete!
+      Timesteps: 61
+      Final time: 500.0 hours
+    
+    Final temperatures:
+      Equator: 24.3°C
+      Pole: -8.7°C
+    ```
+    
+    <Tip>
+      The simulation runs in seconds! The ODE solver automatically adjusts timesteps for efficiency.
+    </Tip>
+  </Step>
+  
+  <Step title="Visualize the results">
+    Add plotting to your script:
+    
+    ```julia
+    # After the simulation completes, add:
+    plot_1d_results(moon, sol)
+    ```
+    
+    This generates plots showing:
+    - Temperature evolution over time
+    - Final temperature profile by latitude
+    - Global mean temperature
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Understanding the code
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Let's break down what's happening:
 
-### Step 3: Go live
+### Creating the moon
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+```julia
+moon = HotMoonBody(18)
+```
+
+This creates a 1D moon with 18 latitude bands from equator to pole. Each band represents a zone at a specific latitude.
+
+### Initial conditions
+
+```julia
+T0 = fill(285.0, moon.n_lat)
+```
+
+We start with a uniform temperature of 285 K (12°C) across all latitudes. The simulator will evolve this based on:
+- Solar heating (varies by latitude and time of day)
+- Infrared radiation
+- Heat transport between bands
+
+### Running the simulation
+
+```julia
+sol = run_simulation(moon, 500, T0)
+```
+
+This solves the energy balance ODEs for 500 hours of simulation time. The solver returns a solution object `sol` containing:
+- `sol.t` - Time points (in seconds)
+- `sol.u` - Temperature at each time point
+
+## 2D simulation
+
+Now let's upgrade to a full 2D simulation with latitude and longitude:
+
+```julia 2d_simulation.jl
+using Pkg
+Pkg.activate(".")
+
+include("src/HotMoon.jl")
+using .HotMoon
+
+# Create a 2D moon with 90 latitude × 180 longitude grid
+moon = HotMoonBody(90, 180, seed=42, sea_level=0.0)
+println(moon)
+println("Total cells: $(moon.n_lat * moon.n_lon)")
+
+# Initialize with uniform temperature
+T0 = fill(285.0, moon.n_lat, moon.n_lon)
+
+# Run for 5000 hours
+println("Running 2D simulation...")
+sol = run_simulation(moon, 5000, T0)
+
+println("Simulation complete!")
+
+# Extract final temperature field
+T_final = reshape(sol.u[end], moon.n_lat, moon.n_lon)
+T_final_C = T_final .- 273.15
+
+# Statistics
+using Statistics
+global_mean = sum(T_final_C .* moon.cell_areas)
+global_min = minimum(T_final_C)
+global_max = maximum(T_final_C)
+
+println("\nGlobal statistics:")
+println("  Mean: $(round(global_mean, digits=1))°C")
+println("  Min:  $(round(global_min, digits=1))°C")
+println("  Max:  $(round(global_max, digits=1))°C")
+
+# Generate visualization
+plot_2d_snapshot(moon, sol, sol.t[end])
+```
+
+<Tip>
+  Use threading for faster 2D simulations:
+  ```bash
+  julia --project=. -t 4 2d_simulation.jl
+  ```
+</Tip>
+
+### 2D terrain parameters
+
+The `HotMoonBody` constructor accepts terrain parameters:
+
+```julia
+moon = HotMoonBody(
+    90, 180,           # Grid resolution
+    seed=42,          # Random seed for reproducibility
+    sea_level=0.0,    # Higher = more ocean (range: -0.3 to 0.3)
+    scale=0.01,       # Noise scale (smaller = larger continents)
+    octaves=5         # Detail level (higher = more detailed terrain)
+)
+```
+
+## Add moisture dynamics
+
+For a complete water cycle with evaporation and precipitation:
+
+```julia moisture_simulation.jl
+using Pkg
+Pkg.activate(".")
+
+include("src/HotMoon.jl")
+using .HotMoon
+
+# Create moon with terrain
+moon = HotMoonBody(90, 180, seed=42, sea_level=0.0)
+
+# Estimate realistic initial conditions
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+
+println("Running simulation with moisture...")
+sol = run_simulation_with_moisture(moon, 10000, T0, M0)
+
+println("Simulation complete!")
+
+# Extract final state
+n_cells = moon.n_lat * moon.n_lon
+T_final = reshape(sol.u[end][1:n_cells], moon.n_lat, moon.n_lon)
+M_final = reshape(sol.u[end][n_cells+1:end], moon.n_lat, moon.n_lon)
+
+# Visualize climate
+plot_climate_dashboard(moon, sol, sol.t[end])
+```
+
+This simulation includes:
+- **Ocean evaporation** - Temperature-dependent moisture source
+- **Atmospheric transport** - Wind-driven moisture movement
+- **Orographic precipitation** - Rain shadows and mountain effects
+- **Latent heat** - Precipitation releases heat
+
+## Using the example scripts
+
+Hot Moon includes pre-built example scripts in the `scripts/` directory:
+
+### 1D simulation
+
+```bash
+julia --project=. scripts/run_1d.jl
+```
+
+Runs a 1D latitude-band simulation for 20,000 hours and generates plots.
+
+### 2D temperature-only
+
+```bash
+julia --project=. -t 4 scripts/run_2d.jl
+```
+
+Runs a 2D temperature simulation with terrain for 10,000 hours.
+
+### 2D with moisture
+
+```bash
+julia --project=. -t 4 scripts/run_2d_moisture.jl
+```
+
+Runs a complete simulation with temperature, moisture, evaporation, and precipitation.
+
+<Note>
+  All example scripts automatically save results to `output/runs/YYYY-MM-DD_HHMMSS_type/` with plots and data files.
+</Note>
+
+## Understanding the output
+
+Simulations save results to timestamped directories:
+
+```
+output/runs/2025-01-15_143022_2d_moisture/
+├── README.md           # Run metadata and statistics
+├── solution.jls        # Full ODE solution (JLD2 format)
+├── moon.jls           # Moon configuration
+└── plots/
+    ├── temperature_final.png
+    ├── moisture_final.png
+    ├── precipitation.png
+    └── biomes.png
+```
+
+### Load saved results
+
+You can load and analyze previous simulations:
+
+```julia
+using JLD2
+
+# Load a previous run
+sol = load("output/runs/2025-01-15_143022_2d_moisture/solution.jls", "solution")
+moon = load("output/runs/2025-01-15_143022_2d_moisture/moon.jls", "moon")
+
+# Re-generate plots or perform new analysis
+plot_2d_snapshot(moon, sol, sol.t[end])
+```
+
+## Key concepts
+
+### Temperature units
+
+All temperatures are stored in Kelvin internally:
+
+```julia
+T_kelvin = 285.0
+T_celsius = T_kelvin - 273.15  # Convert to °C
+```
+
+### Time units
+
+- **Simulation functions use hours**: `run_simulation(moon, 5000, T0)` runs for 5000 hours
+- **Solution times are in seconds**: `sol.t[end] / 3600` converts to hours
+
+### Grid indexing
+
+For 2D simulations:
+
+```julia
+# moon.latitudes[i] - Latitude of row i (degrees, -90 to +90)
+# moon.longitudes[j] - Longitude of column j (degrees, 0 to 360)
+# moon.elevation[i, j] - Terrain elevation at grid point (i, j)
+```
+
+### State vectors
+
+- **1D**: `T` is a vector of length `n_lat`
+- **2D temperature**: `T` is flattened to a vector of length `n_lat * n_lon`
+- **2D moisture**: State is `[T; M]` concatenated
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="API reference" icon="code" href="/api/moon-types">
+    Explore the complete API documentation
+  </Card>
+  <Card title="Physics model" icon="atom" href="/physics/radiative-transfer">
+    Understand the climate physics in detail
+  </Card>
+  <Card title="Simulation guides" icon="book" href="/guides/1d-simulations">
+    Learn from simulation guides and examples
+  </Card>
+  <Card title="Visualization" icon="chart-line" href="/guides/visualization">
+    Create publication-quality plots and animations
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

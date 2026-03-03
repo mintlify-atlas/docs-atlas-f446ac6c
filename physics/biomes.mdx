@@ -1,0 +1,238 @@
+---
+title: Biomes
+description: Biome classification system and heat capacity blending in the Hot Moon climate model
+---
+
+## Overview
+
+The biome system classifies each grid cell into one of 12 biome types based on temperature, moisture, and elevation. Each biome has a characteristic heat capacity that affects thermal inertia and climate response timescales.
+
+Biomes serve two purposes:
+1. **Physical**: Determine heat capacity for energy balance calculations
+2. **Visualization**: Color-code climate maps for analysis
+
+## The 12 Biome Types
+
+| ID | Biome Name | Heat Capacity | Temperature Range | Moisture Range | Elevation |
+|----|------------|---------------|-------------------|----------------|------------|
+| 0 | Ocean | 2.0×10⁷ J·m⁻²·K⁻¹ | Any | Any | < 0 |
+| 1 | Ice Sheet | 1.5×10⁷ | < -10°C | Any | ≥ 0 |
+| 2 | Tundra | 1.0×10⁷ | -10°C to 0°C | Any | ≥ 0 |
+| 3 | Boreal Forest | 8.0×10⁶ | 0°C to 10°C | Wet (M ≥ 3.0) | ≥ 0 |
+| 4 | Cold Steppe | 3.0×10⁶ | 0°C to 10°C | Dry (M < 3.0) | ≥ 0 |
+| 5 | Temperate Forest | 6.0×10⁶ | 10°C to 20°C | Moderate (M ≥ 4.0) | ≥ 0 |
+| 6 | Grassland | 4.0×10⁶ | 10°C to 20°C | Dry (M < 4.0) | ≥ 0 |
+| 7 | Tropical Forest | 8.0×10⁶ | > 20°C | Very wet (M ≥ 5.0) | ≥ 0 |
+| 8 | Savanna | 3.0×10⁶ | > 20°C | Moderate (2.0 ≤ M < 5.0) | ≥ 0 |
+| 9 | Hot Desert | 5.0×10⁵ | > 20°C | Very dry (M < 2.0) | ≥ 0 |
+| 10 | Mountain | 3.0×10⁵ | Any | Any | > 0.5 |
+| 11 | Wetland | 1.2×10⁷ | Any | Any | 0 to 0.1 |
+
+**Source Code**: `src/constants.jl:69-92`
+
+<Note>
+Heat capacity varies by 67× between extremes (hot desert: 5×10⁵ vs ocean: 2×10⁷). High heat capacity biomes (ocean, wetlands, forests) resist temperature changes and smooth diurnal/seasonal cycles, while low heat capacity biomes (deserts, mountains) respond rapidly to radiative forcing.
+</Note>
+
+## Classification Thresholds
+
+### Temperature Zones
+
+**Temperature Boundaries**:
+
+| Zone | Temperature Range | Constant |
+|------|-------------------|----------|
+| Ice | T < 263.15 K (-10°C) | `BIOME_T_ICE` |
+| Tundra | 263.15 K ≤ T < 273.15 K | `BIOME_T_TUNDRA` |
+| Cold | 273.15 K ≤ T < 283.15 K | `BIOME_T_COLD` |
+| Temperate | 283.15 K ≤ T < 293.15 K | `BIOME_T_TEMPERATE` |
+| Hot | T ≥ 293.15 K (20°C) | - |
+
+**Transition Width**: 5.0 K (`BIOME_T_WIDTH`)
+
+### Moisture Zones
+
+**Moisture Boundaries**:
+
+| Zone | Moisture Range | Constant |
+|------|----------------|----------|
+| Very Dry | M < 2.0 kg/m² | `BIOME_M_DESERT` |
+| Dry | M < 3.0 kg/m² | `BIOME_M_DRY` |
+| Moderate | M < 4.0 kg/m² | `BIOME_M_MODERATE` |
+| Wet | M ≥ 4.0 kg/m² | - |
+| Very Wet | M ≥ 5.0 kg/m² | `BIOME_M_WET` |
+
+**Transition Width**: 1.0 kg/m² (`BIOME_M_WIDTH`)
+
+### Elevation Zones
+
+| Zone | Elevation Range | Constant |
+|------|-----------------|----------|
+| Ocean | z < 0 | - |
+| Wetland | 0 ≤ z < 0.1 | `BIOME_ELEV_WETLAND` |
+| Land | 0.1 ≤ z < 0.5 | - |
+| Mountain | z ≥ 0.5 | `BIOME_ELEV_MOUNTAIN` |
+
+**Transition Width**: 0.05 (`BIOME_ELEV_WIDTH`)
+
+## Smooth Biome Blending
+
+For physical calculations (not visualization), heat capacity is **smoothly blended** using hyperbolic tangent transitions rather than hard boundaries.
+
+### Zone Weight Functions
+
+**Ice Zone Weight** (`compute_ice_zone_weight`):
+
+$$
+w_{\text{ice}}(T) = \frac{1}{2}\left(1 - \tanh\left(\frac{T - T_{\text{ice}}}{w_T}\right)\right)
+$$
+
+**Tundra Zone Weight** (`compute_tundra_zone_weight`):
+
+$$
+w_{\text{tundra}}(T) = \frac{1}{2}\left(1 + \tanh\left(\frac{T - T_{\text{ice}}}{w_T}\right)\right) \cdot \frac{1}{2}\left(1 - \tanh\left(\frac{T - T_{\text{tundra}}}{w_T}\right)\right)
+$$
+
+Similarly for cold, temperate, and hot zones. **All weights sum to 1.0**.
+
+**Source Code**: `src/physics/biomes.jl:6-69`
+
+### Moisture-Dependent Blending
+
+Within each temperature zone, biomes blend based on moisture:
+
+**Cold Zone** (0-10°C):
+
+$$
+C_{\text{cold}} = w_{\text{wet}} \cdot C_{\text{boreal}} + (1 - w_{\text{wet}}) \cdot C_{\text{steppe}}
+$$
+
+**Temperate Zone** (10-20°C):
+
+$$
+C_{\text{temp}} = w_{\text{wet}} \cdot C_{\text{temp\_forest}} + (1 - w_{\text{wet}}) \cdot C_{\text{grassland}}
+$$
+
+**Hot Zone** (> 20°C) - three-way blend:
+
+$$
+C_{\text{hot}} = w_{\text{forest}} \cdot C_{\text{tropical}} + w_{\text{savanna}} \cdot C_{\text{savanna}} + w_{\text{desert}} \cdot C_{\text{desert}}
+$$
+
+where weights are based on desert/wet moisture thresholds.
+
+**Source Code**: `src/physics/biomes.jl:126-158`
+
+### Complete Heat Capacity Calculation
+
+**Ocean Cells** (z < 0):
+
+$$
+C = C_{\text{ocean}} \cdot \text{depth\_factor}
+$$
+
+where depth_factor = `clamp(1.0 - z, 1.0, 2.0)` (deeper ocean = higher capacity).
+
+**Mountain Cells** (z > 0.5):
+
+$$
+C = C_{\text{mountain}}
+$$
+
+**Land Cells**:
+
+$$
+C = w_{\text{mountain}} \cdot C_{\text{mountain}} + (1 - w_{\text{mountain}}) \cdot C_{\text{land\_blend}}
+$$
+
+where $C_{\text{land\_blend}}$ combines wetland and climate-zone heat capacities.
+
+**Function**: `compute_biome_blended_heat_capacity(T, M, elevation)` (`src/physics/biomes.jl:180-201`)
+
+<Note>
+Smooth blending eliminates discontinuous derivatives that would cause ODE solver instability. A cell at the tundra/cold boundary smoothly interpolates between biome heat capacities as temperature changes, rather than jumping abruptly.
+</Note>
+
+## Discrete Classification (Visualization)
+
+For visualization and analysis, cells are assigned to discrete biome IDs:
+
+```julia
+function classify_cell_biome(T, M, elevation)
+    # Priority order: ocean → mountain → wetland → climate zones
+    if elevation < 0.0
+        return BIOME_OCEAN
+    elseif elevation > BIOME_ELEV_MOUNTAIN
+        return BIOME_MOUNTAIN
+    elseif elevation < BIOME_ELEV_WETLAND
+        return BIOME_WETLAND
+    end
+    
+    # Climate zone classification
+    if T < BIOME_T_ICE
+        return BIOME_ICE_SHEET
+    elseif T < BIOME_T_TUNDRA
+        return BIOME_TUNDRA
+    # ... (see source for complete logic)
+end
+```
+
+**Source Code**: `src/physics/biomes.jl:204-234`
+
+## Heat Capacity Effects on Climate
+
+### Diurnal Temperature Range
+
+Low heat capacity biomes have large day-night temperature swings:
+
+**Temperature change rate**:
+
+$$
+\frac{dT}{dt} = \frac{Q_{\text{net}}}{C}
+$$
+
+For the same radiative forcing $Q_{\text{net}}$:
+
+| Biome | Heat Capacity | Relative Response Speed |
+|-------|---------------|-------------------------|
+| Hot Desert | 5.0×10⁵ | 40× faster than ocean |
+| Mountain | 3.0×10⁵ | 67× faster than ocean |
+| Grassland | 4.0×10⁶ | 5× faster than ocean |
+| Tropical Forest | 8.0×10⁶ | 2.5× faster than ocean |
+| Ocean | 2.0×10⁷ | 1× (baseline) |
+
+<Note>
+Deserts on the Hot Moon can experience temperature swings of 100+ K between subsolar and nightside points, while deep oceans maintain nearly constant temperatures throughout the rotation period.
+</Note>
+
+## Fallback Systems
+
+### 1D Simulations (Latitude Only)
+
+**Latitude-Based Heat Capacity** (`compute_latitude_based_heat_capacity`):
+
+| Latitude Zone | Heat Capacity |
+|---------------|---------------|
+| Equatorial (\|lat\| < 30°) | 1.0×10⁶ J·m⁻²·K⁻¹ |
+| Mid-latitude (30° ≤ \|lat\| < 70°) | 4.0×10⁶ |
+| Polar (\|lat\| ≥ 70°) | 1.0×10⁷ |
+
+**Source Code**: `src/physics/biomes.jl:237-251`
+
+### 2D Temperature-Only Simulations
+
+**Elevation-Based Heat Capacity** (`compute_elevation_based_heat_capacity`):
+
+Combines latitude zones with elevation modifiers:
+- Ocean: depth-scaled ocean capacity
+- Wetland (0 < z < 0.15): linear interpolation to land
+- Mountains (z > 0.5): transition to mountain capacity
+- Land: latitude-based capacity
+
+**Source Code**: `src/physics/biomes.jl:254-279`
+
+## Related Pages
+
+- [Moisture Dynamics](/physics/moisture-dynamics) - Moisture thresholds for classification
+- [Heat Transport](/physics/heat-transport) - Heat capacity affects thermal response
+- [Moisture Coupling Guide](/guides/moisture-coupling) - Visualizing biome distributions

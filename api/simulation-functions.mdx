@@ -1,0 +1,328 @@
+---
+title: 'Simulation Functions'
+description: 'Run climate simulations using ODE solvers'
+---
+
+## Overview
+
+The simulation functions are the core of the Hot Moon Climate Simulator. They solve ordinary differential equations (ODEs) that model energy balance, heat transport, and moisture dynamics across the moon's surface.
+
+All simulations use the `Tsit5()` solver from DifferentialEquations.jl with adaptive timesteps and output saved every 30 minutes (1800 seconds).
+
+---
+
+## run_simulation (1D)
+
+Run a 1D climate simulation with latitude bands only.
+
+```julia
+sol = run_simulation(moon::MoonBody1D, hours, T0; callback=nothing)
+```
+
+<ParamField path="moon" type="MoonBody1D" required>
+  The 1D moon body structure containing latitude bands and grid configuration.
+</ParamField>
+
+<ParamField path="hours" type="Real" required>
+  Simulation duration in hours. The solver internally converts this to seconds.
+</ParamField>
+
+<ParamField path="T0" type="AbstractVector{<:Real}" required>
+  Initial temperature field in Kelvin. Must have length `moon.n_lat`.
+</ParamField>
+
+<ParamField path="callback" type="Callback" default="nothing">
+  Optional DifferentialEquations.jl callback for progress tracking or custom events. Use `make_progress_callback()` for built-in progress output.
+</ParamField>
+
+### Returns
+
+Returns an `ODESolution` object containing:
+- `sol.t`: Time points (in seconds)
+- `sol.u`: Temperature states at each time point
+- `sol.u[end]`: Final temperature field
+
+### Example
+
+```julia
+using HotMoon
+
+# Create a 1D moon with 18 latitude bands
+moon = HotMoonBody(18)
+
+# Initialize with uniform temperature
+T0 = fill(285.0, moon.n_lat)  # 285 K = 11.85°C
+
+# Run simulation for 5000 hours with progress updates
+progress = make_progress_callback(5000.0, update_interval_hours=100)
+sol = run_simulation(moon, 5000.0, T0, callback=progress)
+
+# Extract final temperatures
+T_final = sol.u[end]
+println("Final equatorial temp: $(T_final[1] - 273.15)°C")
+```
+
+<Note>
+The 1D solver uses `derivatives_1d!()` internally, which computes:
+- Solar heating: `get_solar(t, lat, T)`
+- Longwave cooling: `compute_outgoing_longwave_radiation(T, transmissivity)`
+- Heat transport: Diffusive flow between adjacent latitude bands
+
+Solver tolerances: `reltol=1e-6`, `abstol=1e-8`
+</Note>
+
+---
+
+## run_simulation (2D)
+
+Run a 2D temperature-only climate simulation on a latitude-longitude grid.
+
+```julia
+sol = run_simulation(moon::MoonBody2D, hours, T0; callback=nothing)
+```
+
+<ParamField path="moon" type="MoonBody2D" required>
+  The 2D moon body structure containing the spatial grid, elevation, and transport coefficients.
+</ParamField>
+
+<ParamField path="hours" type="Real" required>
+  Simulation duration in hours.
+</ParamField>
+
+<ParamField path="T0" type="AbstractMatrix{<:Real}" required>
+  Initial temperature field in Kelvin. Must have dimensions `(moon.n_lat, moon.n_lon)`.
+</ParamField>
+
+<ParamField path="callback" type="Callback" default="nothing">
+  Optional callback for events or progress tracking.
+</ParamField>
+
+### Returns
+
+Returns an `ODESolution` object where:
+- `sol.u[i]`: Flattened temperature vector at timestep `i`
+- To reconstruct 2D: `T = reshape(sol.u[i], moon.n_lat, moon.n_lon)`
+
+### Example
+
+```julia
+# Create a 2D moon (90×180 grid)
+moon = HotMoonBody(90, 180, seed=42, sea_level=0.1)
+
+# Initialize with uniform temperature
+T0 = fill(285.0, moon.n_lat, moon.n_lon)
+
+# Run simulation
+sol = run_simulation(moon, 10000.0, T0)
+
+# Get final temperature field
+T_final = reshape(sol.u[end], moon.n_lat, moon.n_lon)
+
+# Calculate global mean (weighted by cell area)
+global_mean = sum(T_final .* moon.cell_areas)
+println("Global mean temperature: $(global_mean - 273.15)°C")
+```
+
+<Note>
+The 2D temperature-only solver accounts for:
+- Solar heating: `get_solar_2d(t, lat, lon, T)`
+- Elevation-dependent greenhouse effect
+- 4-neighbor heat transport (north, south, east, west)
+- Terrain-modified transport coefficients (mountains slow heat flow)
+
+Solver tolerances: `reltol=1e-6`, `abstol=1e-6`
+</Note>
+
+---
+
+## run_simulation_with_moisture
+
+Run a coupled temperature-moisture simulation in 2D.
+
+```julia
+sol = run_simulation_with_moisture(moon::MoonBody2D, hours, T0, M0; callback=nothing)
+```
+
+<ParamField path="moon" type="MoonBody2D" required>
+  The 2D moon body with elevation and transport coefficients.
+</ParamField>
+
+<ParamField path="hours" type="Real" required>
+  Simulation duration in hours.
+</ParamField>
+
+<ParamField path="T0" type="AbstractMatrix{<:Real}" required>
+  Initial temperature field in Kelvin. Dimensions: `(moon.n_lat, moon.n_lon)`.
+</ParamField>
+
+<ParamField path="M0" type="AbstractMatrix{<:Real}" required>
+  Initial moisture field in kg/m². Dimensions: `(moon.n_lat, moon.n_lon)`.
+</ParamField>
+
+<ParamField path="callback" type="Callback" default="nothing">
+  Optional callback for events or progress tracking.
+</ParamField>
+
+### Returns
+
+Returns an `ODESolution` where the state vector is `[T₁₁, ..., Tₙₘ, M₁₁, ..., Mₙₘ]`:
+- First `n_cells` elements: Temperature (K)
+- Last `n_cells` elements: Moisture (kg/m²)
+
+### Example
+
+```julia
+# Create moon
+moon = HotMoonBody(90, 180, seed=32, sea_level=0.05)
+
+# Estimate physically consistent initial conditions
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+
+# Run coupled simulation
+progress = make_progress_callback(15000.0, update_interval_hours=100)
+sol = run_simulation_with_moisture(moon, 15000.0, T0, M0, callback=progress)
+
+# Extract final state
+n_cells = moon.n_lat * moon.n_lon
+T_final = reshape(sol.u[end][1:n_cells], moon.n_lat, moon.n_lon)
+M_final = reshape(sol.u[end][n_cells+1:end], moon.n_lat, moon.n_lon)
+
+println("Temperature range: $(minimum(T_final) - 273.15)°C to $(maximum(T_final) - 273.15)°C")
+println("Moisture range: $(minimum(M_final)) to $(maximum(M_final)) kg/m²")
+```
+
+<Note>
+The coupled solver (`derivatives_temperature_moisture!()`) includes:
+- **Temperature feedbacks:**
+  - Moisture-dependent greenhouse effect: `compute_total_ir_optical_depth(M)`
+  - Latent heat from evaporation and precipitation
+  - Heat transport with terrain barriers
+  
+- **Moisture dynamics:**
+  - Ocean evaporation: `compute_ocean_evaporation_rate(T, elev)`
+  - Orographic precipitation: `compute_orographic_precipitation_rate(M, T, elev)`
+  - Moisture transport with mountain barriers (stronger than heat barriers)
+  
+Solver tolerances: `reltol=1e-6`, `abstol=1e-8`
+
+Mountains block moisture transport more strongly than heat transport (`MOISTURE_BARRIER_STRENGTH = 8.0` vs `SLOPE_BARRIER_STRENGTH = 4.0`).
+</Note>
+
+---
+
+## make_progress_callback
+
+Create a callback that prints simulation progress at regular intervals.
+
+```julia
+callback = make_progress_callback(total_hours; update_interval_hours=100)
+```
+
+<ParamField path="total_hours" type="Real" required>
+  Total simulation duration in hours (same as passed to `run_simulation`).
+</ParamField>
+
+<ParamField path="update_interval_hours" type="Real" default="100">
+  How often to print progress updates (in hours).
+</ParamField>
+
+### Returns
+
+A `PeriodicCallback` that prints progress percentage and elapsed time.
+
+### Example
+
+```julia
+# Create progress callback that updates every 250 hours
+callback = make_progress_callback(10000.0, update_interval_hours=250)
+
+# Use with simulation
+sol = run_simulation(moon, 10000.0, T0, callback=callback)
+```
+
+**Output:**
+```
+  [Progress updates every 250 hours]
+  Progress:   3% (250 / 10000 hours)
+  Progress:   5% (500 / 10000 hours)
+  Progress:   8% (750 / 10000 hours)
+  ...
+```
+
+<Note>
+Progress callbacks are useful for long-running simulations. The callback uses `PeriodicCallback` from DifferentialEquations.jl, which executes at fixed time intervals without affecting the adaptive timestep algorithm.
+</Note>
+
+---
+
+## Solver Details
+
+### ODE System (1D)
+
+For each latitude band `i`:
+
+```
+dT[i]/dt = (Q_in - Q_out + transport[i]) / heat_capacity
+```
+
+Where:
+- `Q_in`: Solar heating (depends on time, latitude, albedo)
+- `Q_out`: Outgoing longwave radiation (Stefan-Boltzmann with greenhouse effect)
+- `transport[i]`: Net heat flow from neighbors
+- `heat_capacity`: Latitude-dependent (polar regions have higher capacity)
+
+### ODE System (2D, Temperature Only)
+
+For each grid cell `(i, j)`:
+
+```
+dT[i,j]/dt = (Q_in - Q_out + transport[i,j]) / heat_capacity
+```
+
+Heat transport includes contributions from 4 neighbors (N, S, E, W), modulated by terrain-based transport coefficients.
+
+### ODE System (2D, Temperature + Moisture)
+
+For each grid cell `(i, j)`:
+
+```
+dT[i,j]/dt = (Q_in - Q_out + heat_transport + Q_latent) / heat_capacity
+dM[i,j]/dt = evap - precip + moisture_transport
+```
+
+Where:
+- `Q_latent`: Latent heat flux from phase changes (evaporation cools, precipitation warms)
+- `evap`: Ocean evaporation rate (zero over land)
+- `precip`: Orographic precipitation (increases with moisture and elevation)
+- `moisture_transport`: Diffusive moisture flow between cells
+
+### Time Units
+
+- **Input:** Hours (user-facing)
+- **Internal:** Seconds (ODE solver)
+- **Output timesteps:** Every 1800 seconds (30 minutes)
+
+### State Vector Layout
+
+**1D simulations:**
+```
+State = [T₁, T₂, ..., Tₙ]
+```
+
+**2D temperature-only:**
+```
+State = [T₁₁, T₁₂, ..., T₁ₙ, T₂₁, ..., Tₘₙ]  (row-major flattening)
+```
+
+**2D temperature + moisture:**
+```
+State = [T₁₁, ..., Tₘₙ, M₁₁, ..., Mₘₙ]  (temperature block, then moisture block)
+```
+
+<Note>
+**Performance tips:**
+- Use Julia multithreading for 2D simulations: `julia --project=. -t 4 script.jl`
+- Grid sizes around 90×180 cells provide good balance of detail and speed
+- Moisture coupling roughly doubles computation time vs temperature-only
+- Progress callbacks have minimal overhead (< 0.1% of runtime)
+</Note>

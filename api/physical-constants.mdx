@@ -1,0 +1,484 @@
+---
+title: 'Physical Constants'
+description: 'Complete reference for all physical constants and parameters used in Hot Moon Climate Simulator'
+---
+
+## Overview
+
+The Hot Moon simulator uses physically-motivated constants derived from exoplanet science and Earth analogs. All constants are defined in `src/constants.jl` and can be imported via `using HotMoon`.
+
+Constants are organized into categories: orbital parameters, radiative properties, heat transport, moisture physics, terrain elevation, and biome classifications.
+
+## Orbital and Radiative Constants
+
+### Orbital Mechanics
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `ROTATION_PERIOD` | 28.0 × 3600 | seconds | Moon's rotation period (28 hours) |
+| `ORBITAL_PERIOD` | 64.0 × 3600 | seconds | Orbital period around host planet (64 hours) |
+| `ECLIPSE_DURATION` | 4.0 × 3600 | seconds | Duration of planetary eclipse (4 hours) |
+
+**Usage:**
+```julia
+# Convert time to rotation cycles
+hours_simulated = 2000.0
+n_rotations = (hours_simulated * 3600) / ROTATION_PERIOD  # ≈ 71 rotations
+
+# Eclipse frequency
+eclipses_per_rotation = ROTATION_PERIOD / ORBITAL_PERIOD  # ≈ 0.44
+```
+
+### Radiative Properties
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `STEFAN_BOLTZMANN` | 5.67 × 10⁻⁸ | W⋅m⁻²⋅K⁻⁴ | Stefan-Boltzmann constant |
+| `SOLAR_CONSTANT` | 2100.0 | W⋅m⁻² | Solar flux at moon's orbit (1.55× Earth) |
+| `EMISSIVITY` | 0.95 | dimensionless | Surface infrared emissivity |
+| `BASE_ALBEDO` | 0.28 | dimensionless | Base surface albedo (rocky surface) |
+| `ICE_ALBEDO` | 0.60 | dimensionless | Ice/snow albedo |
+
+**Physics:**
+```julia
+# Surface energy balance (simplified)
+F_in = SOLAR_CONSTANT * (1 - albedo) * cos(zenith)
+F_out = EMISSIVITY * STEFAN_BOLTZMANN * T^4
+
+# Ice-albedo feedback (smooth tanh transition)
+ice_fraction = 0.5 * (1 + tanh((FREEZING_POINT - T) / ICE_TRANSITION_WIDTH))
+albedo = BASE_ALBEDO + ice_fraction * (ICE_ALBEDO - BASE_ALBEDO)
+```
+
+### Atmospheric Opacity
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `SOLAR_OPTICAL_DEPTH` | 0.25 | dimensionless | Atmospheric absorption of solar radiation |
+| `BASE_IR_OPTICAL_DEPTH` | 1.0 | dimensionless | IR optical depth from permanent gases |
+| `WV_OPTICAL_SCALE` | 0.8 | dimensionless | Water vapor contribution to IR opacity |
+| `WV_REF_MOISTURE` | 5.0 | kg/m² | Reference moisture for opacity scaling |
+| `ELEVATION_GREENHOUSE_REDUCTION` | 0.5 | dimensionless | Reduction of greenhouse effect at high elevation |
+
+**Usage:**
+```julia
+# Total IR optical depth (moisture-dependent greenhouse effect)
+τ_IR = BASE_IR_OPTICAL_DEPTH + WV_OPTICAL_SCALE * (M / WV_REF_MOISTURE)
+
+# Elevation reduces greenhouse effect (thinner atmosphere)
+τ_eff = τ_IR * (1 - ELEVATION_GREENHOUSE_REDUCTION * max(0, elevation))
+```
+
+## Heat Transport Constants
+
+### Conduction and Convection
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `HEAT_TRANSPORT_BASE` | 15.0 | W⋅m⁻²⋅K⁻¹ | Base heat transport coefficient (conduction) |
+| `HEAT_TRANSPORT_CONVECTION` | 30.0 | W⋅m⁻²⋅K⁻¹ | Additional transport from convection |
+| `CONVECTION_THRESHOLD` | 270.0 | K | Temperature threshold for convection onset |
+| `CONVECTION_WIDTH` | 20.0 | K | Smoothness of convection transition |
+
+**Physics:**
+```julia
+# Smooth convection activation (tanh)
+convection_active = 0.5 * (1 + tanh((T - CONVECTION_THRESHOLD) / CONVECTION_WIDTH))
+κ = HEAT_TRANSPORT_BASE + HEAT_TRANSPORT_CONVECTION * convection_active
+
+# Heat flux between cells
+Q = κ * (T_neighbor - T_cell)
+```
+
+### Terrain-Modified Transport
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `SLOPE_BARRIER_STRENGTH` | 4.0 | dimensionless | Upslope barrier strength for heat |
+| `DOWNSLOPE_STRENGTH` | 0.4 | dimensionless | Downslope enhancement factor |
+| `SLOPE_SCALE` | 3.0 | dimensionless | Steepness scaling for barriers |
+| `OCEAN_TRANSPORT_BONUS` | 1.5 | dimensionless | Ocean circulation enhancement |
+
+**Usage:**
+```julia
+# Slope barrier (mountains block heat transport)
+Δelev = elevation_neighbor - elevation_cell
+upslope_barrier = exp(-SLOPE_BARRIER_STRENGTH * max(0, Δelev / SLOPE_SCALE))
+downslope_bonus = 1 + DOWNSLOPE_STRENGTH * max(0, -Δelev / SLOPE_SCALE)
+
+κ_terrain = κ * upslope_barrier * downslope_bonus
+
+# Ocean bonus (stronger circulation)
+if elevation < 0
+    κ_terrain *= OCEAN_TRANSPORT_BONUS
+end
+```
+
+## Heat Capacity Constants
+
+### Latitude Zone Heat Capacities
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `HEAT_CAPACITY_EQUATORIAL` | 1.0 × 10⁶ | J⋅m⁻²⋅K⁻¹ | Equatorial zone (thin atmosphere) |
+| `HEAT_CAPACITY_MIDLAT` | 4.0 × 10⁶ | J⋅m⁻²⋅K⁻¹ | Mid-latitude zone |
+| `HEAT_CAPACITY_POLAR` | 1.0 × 10⁷ | J⋅m⁻²⋅K⁻¹ | Polar zone (deep atmosphere) |
+
+**Zone Boundaries:**
+- Equatorial: |latitude| < 30° (`ZONE_EQUATORIAL_END`)
+- Mid-latitude: 30° ≤ |latitude| < 70° (`ZONE_MIDLAT_END`)
+- Polar: |latitude| ≥ 70°
+
+### Terrain-Based Heat Capacities
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `HEAT_CAPACITY_OCEAN` | 2.0 × 10⁷ | J⋅m⁻²⋅K⁻¹ | Ocean/water (high thermal inertia) |
+| `HEAT_CAPACITY_WETLAND` | 1.0 × 10⁷ | J⋅m⁻²⋅K⁻¹ | Low-elevation wetlands |
+| `HEAT_CAPACITY_MOUNTAIN` | 3.0 × 10⁵ | J⋅m⁻²⋅K⁻¹ | High-elevation mountains (low) |
+
+**Usage:**
+```julia
+# Heat capacity assignment
+if elevation < 0
+    C = HEAT_CAPACITY_OCEAN
+elseif elevation < ELEV_WETLAND_END
+    C = HEAT_CAPACITY_WETLAND
+elseif elevation > ELEV_MOUNTAIN_START
+    C = HEAT_CAPACITY_MOUNTAIN
+else
+    C = latitude_based_capacity(lat)
+end
+
+# Temperature evolution
+dT/dt = (F_in - F_out + ∇⋅(κ∇T)) / C
+```
+
+## Moisture Physics Constants
+
+### Evaporation and Saturation
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `MOISTURE_REF_TEMP` | 273.15 | K | Reference temperature (0°C) |
+| `MOISTURE_REF_SATURATION` | 5.0 | kg/m² | Saturation at reference temperature |
+| `CLAUSIUS_CLAPEYRON_SCALE` | 17.0 | dimensionless | Exponential scaling in Clausius-Clapeyron |
+| `EVAP_RATE` | 0.3 × 10⁻⁵ | kg⋅m⁻²⋅s⁻¹⋅K⁻¹ | Evaporation rate coefficient |
+| `EVAP_THRESHOLD` | 273.15 | K | Minimum temperature for evaporation |
+| `LATENT_HEAT` | 2.5 × 10⁶ | J/kg | Latent heat of vaporization |
+
+**Physics:**
+```julia
+# Clausius-Clapeyron saturation vapor
+M_sat = MOISTURE_REF_SATURATION * exp(CLAUSIUS_CLAPEYRON_SCALE * (T - MOISTURE_REF_TEMP) / MOISTURE_REF_TEMP)
+
+# Evaporation (only over water, above freezing)
+if elevation < 0 && T > EVAP_THRESHOLD
+    evap = EVAP_RATE * (T - EVAP_THRESHOLD)
+else
+    evap = 0
+end
+
+# Latent heat flux
+Q_latent = LATENT_HEAT * (evaporation - precipitation)
+```
+
+### Precipitation
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `PRECIP_RATE` | 0.002 | 1/s | Precipitation rate coefficient |
+| `FREEZING_POINT` | 273.15 | K | Water freezing point |
+| `ICE_TRANSITION_WIDTH` | 10.0 | K | Temperature range for ice transition |
+
+**Usage:**
+```julia
+# Orographic precipitation (enhanced at high elevation, warm temps)
+precip_base = PRECIP_RATE * max(0, M - M_sat)
+elevation_factor = 1 + 2 * max(0, elevation)
+warm_factor = 0.5 * (1 + tanh((T - FREEZING_POINT) / ICE_TRANSITION_WIDTH))
+
+precip = precip_base * elevation_factor * warm_factor
+```
+
+### Moisture Transport
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `MOISTURE_DIFFUSION` | 0.7 × 10⁻⁴ | 1/s | Base moisture diffusion rate |
+| `MOISTURE_BARRIER_STRENGTH` | 8.0 | dimensionless | Mountain barrier to moisture (2× heat) |
+| `MOISTURE_DOWNSLOPE_PREFERENCE` | 0.3 | dimensionless | Downslope moisture flow enhancement |
+| `MOISTURE_SLOPE_SENSITIVITY` | 3.0 | dimensionless | Steepness scaling for moisture barriers |
+
+**Usage:**
+```julia
+# Moisture transport (stronger barriers than heat)
+upslope_barrier = exp(-MOISTURE_BARRIER_STRENGTH * max(0, Δelev / MOISTURE_SLOPE_SENSITIVITY))
+downslope_bonus = 1 + MOISTURE_DOWNSLOPE_PREFERENCE * max(0, -Δelev / MOISTURE_SLOPE_SENSITIVITY)
+
+D_moisture = MOISTURE_DIFFUSION * upslope_barrier * downslope_bonus
+```
+
+## Elevation and Terrain Constants
+
+### Elevation Thresholds
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `ELEV_WETLAND_END` | 0.15 | normalized | Upper limit for wetland classification |
+| `ELEV_MOUNTAIN_START` | 0.5 | normalized | Lower limit for mountain classification |
+| `LAPSE_RATE` | 6.5 × 10⁻³ | K/m | Atmospheric temperature lapse rate |
+| `ELEVATION_SCALE` | 5000.0 | m | Scaling factor for elevation effects |
+
+**Notes:**
+- Elevation is normalized: -1 (deep ocean) to +1 (high mountains)
+- Sea level is typically 0.0 to 0.1 depending on `sea_level` parameter
+- Lapse rate reduces temperature at high elevations
+
+**Usage:**
+```julia
+# Temperature adjustment for elevation
+physical_elevation_m = elevation * ELEVATION_SCALE
+T_adjusted = T_surface - LAPSE_RATE * max(0, physical_elevation_m)
+```
+
+## Biome Classification Constants
+
+### Biome Type IDs
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `BIOME_OCEAN` | 0 | Ocean/water |
+| `BIOME_ICE_SHEET` | 1 | Ice sheet/glacier |
+| `BIOME_TUNDRA` | 2 | Tundra |
+| `BIOME_BOREAL_FOREST` | 3 | Boreal forest |
+| `BIOME_COLD_STEPPE` | 4 | Cold steppe |
+| `BIOME_TEMPERATE_FOREST` | 5 | Temperate forest |
+| `BIOME_GRASSLAND` | 6 | Grassland |
+| `BIOME_TROPICAL_FOREST` | 7 | Tropical rainforest |
+| `BIOME_SAVANNA` | 8 | Savanna |
+| `BIOME_HOT_DESERT` | 9 | Hot desert |
+| `BIOME_MOUNTAIN` | 10 | Mountain/alpine |
+| `BIOME_WETLAND` | 11 | Wetland/marsh |
+| `NUM_BIOMES` | 12 | Total number of biomes |
+
+### Biome Temperature Thresholds
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `BIOME_T_ICE` | 263.15 | K | Ice sheet threshold (-10°C) |
+| `BIOME_T_TUNDRA` | 273.15 | K | Tundra/cold threshold (0°C) |
+| `BIOME_T_COLD` | 283.15 | K | Cold/temperate boundary (10°C) |
+| `BIOME_T_TEMPERATE` | 293.15 | K | Temperate/warm boundary (20°C) |
+| `BIOME_T_WIDTH` | 5.0 | K | Smoothness of temperature transitions |
+
+### Biome Moisture Thresholds
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `BIOME_M_DESERT` | 2.0 | kg/m² | Desert threshold (arid) |
+| `BIOME_M_DRY` | 3.0 | kg/m² | Dry/semi-arid threshold |
+| `BIOME_M_MODERATE` | 4.0 | kg/m² | Moderate moisture threshold |
+| `BIOME_M_WET` | 5.0 | kg/m² | Wet/humid threshold |
+| `BIOME_M_WIDTH` | 1.0 | kg/m² | Smoothness of moisture transitions |
+
+### Biome Elevation Thresholds
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `BIOME_ELEV_MOUNTAIN` | 0.5 | normalized | Mountain biome elevation threshold |
+| `BIOME_ELEV_WETLAND` | 0.1 | normalized | Wetland maximum elevation |
+| `BIOME_ELEV_WIDTH` | 0.05 | normalized | Smoothness of elevation transitions |
+
+### Biome Heat Capacities
+
+```julia
+BIOME_HEAT_CAPACITY = [          # J⋅m⁻²⋅K⁻¹, indexed by biome_id + 1
+    2.0e7,  # Ocean
+    1.5e7,  # Ice Sheet
+    1.0e7,  # Tundra
+    8.0e6,  # Boreal Forest
+    3.0e6,  # Cold Steppe
+    6.0e6,  # Temperate Forest
+    4.0e6,  # Grassland
+    8.0e6,  # Tropical Forest
+    3.0e6,  # Savanna
+    5.0e5,  # Hot Desert
+    3.0e5,  # Mountain
+    1.2e7,  # Wetland
+]
+```
+
+### Biome Names
+
+```julia
+BIOME_NAMES = [
+    "Ocean", "Ice Sheet", "Tundra", "Boreal Forest", "Cold Steppe",
+    "Temperate Forest", "Grassland", "Tropical Forest", "Savanna",
+    "Hot Desert", "Mountain", "Wetland"
+]
+```
+
+**Usage:**
+```julia
+# Get biome name from ID
+biome_id = classify_cell_biome(T, M, elevation)
+biome_name = BIOME_NAMES[biome_id + 1]  # Julia 1-indexing
+
+# Get heat capacity for biome
+C = BIOME_HEAT_CAPACITY[biome_id + 1]
+```
+
+## Initial State Constants
+
+### Initialization Parameters
+
+| Constant | Value | Units | Description |
+|----------|-------|-------|-------------|
+| `INIT_T_EQUATOR` | 310.0 | K | Initial equatorial temperature (37°C) |
+| `INIT_T_POLE` | 250.0 | K | Initial polar temperature (-23°C) |
+| `DEFAULT_MOISTURE_ESTIMATE_KG_M2` | 3.0 | kg/m² | Default moisture guess |
+| `INIT_MOISTURE_DIFFUSE_ITERS` | 15 | iterations | Smoothing iterations for moisture |
+| `INIT_MOISTURE_DECAY` | 0.7 | dimensionless | Decay factor per smoothing iteration |
+| `INIT_MOISTURE_SATURATION_CAP` | 0.8 | dimensionless | Cap moisture at 80% of saturation |
+
+**Usage:**
+```julia
+# Used internally by estimate_initial_temperature_and_moisture()
+T_init = INIT_T_EQUATOR - (INIT_T_EQUATOR - INIT_T_POLE) * abs(sin(lat))
+```
+
+## Performance Constants
+
+### Threading Parameters
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `THREADING_MIN_CELLS` | 100 | Minimum cells to enable threading |
+| `USE_THREADING` | Ref(Threads.nthreads() > 1) | Runtime threading flag |
+
+**Usage:**
+```julia
+# Enable multithreading for large grids
+moon = HotMoonBody(180, 360)  # 64,800 cells
+# Automatically uses threading if julia started with -t flag
+
+# Check threading status
+if USE_THREADING[]
+    println("Multithreading enabled: $(Threads.nthreads()) threads")
+end
+```
+
+## Constant Relationships
+
+### Time Scales
+
+```julia
+# Rotation period
+rotation_hours = ROTATION_PERIOD / 3600  # 28 hours
+
+# Eclipse frequency
+eclipse_interval = ORBITAL_PERIOD / 2     # 32 hours between eclipses
+eclipses_per_rotation = ROTATION_PERIOD / ORBITAL_PERIOD  # ≈ 0.44
+
+# Metacycle (rotation + orbit alignment)
+metacycle_hours = 448  # 16 rotations ≈ 7 orbits
+```
+
+### Energy Scales
+
+```julia
+# Incoming solar flux (subsolar point)
+F_solar_max = SOLAR_CONSTANT * (1 - BASE_ALBEDO)  # ≈ 1512 W/m²
+
+# Equilibrium temperature (no atmosphere)
+T_eq_subsolar = (F_solar_max / (EMISSIVITY * STEFAN_BOLTZMANN))^0.25  # ≈ 331 K
+
+# Heat capacity time constant (equatorial)
+τ_thermal = HEAT_CAPACITY_EQUATORIAL / (4 * EMISSIVITY * STEFAN_BOLTZMANN * T_eq_subsolar^3)
+# ≈ 6 hours
+```
+
+### Transport Scales
+
+```julia
+# Heat diffusion length scale (per rotation period)
+L_heat = sqrt(HEAT_TRANSPORT_BASE * ROTATION_PERIOD / HEAT_CAPACITY_EQUATORIAL)
+
+# Moisture diffusion length scale
+L_moisture = sqrt(MOISTURE_DIFFUSION * ROTATION_PERIOD)
+```
+
+## Complete Example
+
+```julia
+using HotMoon
+
+# Display key constants
+println("Orbital Parameters:")
+println("  Rotation: $(ROTATION_PERIOD/3600) hours")
+println("  Orbit: $(ORBITAL_PERIOD/3600) hours")
+println("  Solar flux: $(SOLAR_CONSTANT) W/m²")
+
+println("\nHeat Transport:")
+println("  Base: $(HEAT_TRANSPORT_BASE) W/m²/K")
+println("  Convection: $(HEAT_TRANSPORT_CONVECTION) W/m²/K")
+println("  Threshold: $(CONVECTION_THRESHOLD) K")
+
+println("\nMoisture Physics:")
+println("  Evaporation rate: $(EVAP_RATE) kg/m²/s/K")
+println("  Precipitation rate: $(PRECIP_RATE) 1/s")
+println("  Latent heat: $(LATENT_HEAT/1e6) MJ/kg")
+
+println("\nBiomes:")
+for (i, name) in enumerate(BIOME_NAMES)
+    C = BIOME_HEAT_CAPACITY[i]
+    println("  $(name): C = $(C/1e6) MJ/m²/K")
+end
+
+# Access constants in physics calculations
+function surface_energy_balance(T, M, zenith, elevation)
+    # Albedo with ice-albedo feedback
+    ice_frac = 0.5 * (1 + tanh((FREEZING_POINT - T) / ICE_TRANSITION_WIDTH))
+    albedo = BASE_ALBEDO + ice_frac * (ICE_ALBEDO - BASE_ALBEDO)
+    
+    # Incoming solar
+    F_in = SOLAR_CONSTANT * (1 - albedo) * max(0, cos(zenith))
+    
+    # Greenhouse effect
+    τ = BASE_IR_OPTICAL_DEPTH + WV_OPTICAL_SCALE * (M / WV_REF_MOISTURE)
+    τ_eff = τ * (1 - ELEVATION_GREENHOUSE_REDUCTION * max(0, elevation))
+    
+    # Outgoing IR (reduced by greenhouse)
+    F_out = EMISSIVITY * STEFAN_BOLTZMANN * T^4 / (1 + 0.75 * τ_eff)
+    
+    return F_in - F_out
+end
+```
+
+## Notes on Units
+
+- All temperatures are in Kelvin internally; visualization converts to Celsius
+- All times are in seconds internally; user-facing functions use hours
+- Elevation is normalized -1 to 1; multiply by `ELEVATION_SCALE` for physical height
+- Moisture is column-integrated water vapor (kg/m²)
+- Heat capacities are per unit area (J⋅m⁻²⋅K⁻¹), not per unit mass
+
+## Customization
+
+Constants are defined as `const` values and cannot be changed at runtime. To modify simulation parameters:
+
+1. Edit `src/constants.jl` directly
+2. Restart Julia REPL to reload constants
+3. Re-run simulations with new values
+
+**Example modification:**
+```julia
+# In src/constants.jl, change:
+const SOLAR_CONSTANT = 2100.0  # Original
+
+# To:
+const SOLAR_CONSTANT = 1361.0  # Earth-like insolation
+```
+
+For sensitivity studies, consider creating parameter sweep scripts that modify and reload the module for each configuration.

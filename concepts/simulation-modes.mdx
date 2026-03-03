@@ -1,0 +1,470 @@
+---
+title: Simulation Modes
+description: 1D latitude, 2D temperature, 2D moisture, and two-layer atmosphere variants
+---
+
+## Overview
+
+Hot Moon offers four simulation modes with increasing complexity:
+
+| Mode | State Variables | Grid | Use Case |
+|------|-----------------|------|----------|
+| **1D** | T[lat] | 18 bands | Educational, rapid prototyping |
+| **2D Temperature** | T[lat,lon] | 45×90 to 180×360 | Basic climate patterns |
+| **2D + Moisture** | T, M | 45×90 to 90×180 | Full water cycle |
+| **Two-Layer Atmosphere** | T, M, U, M_up | 45×90 | Atmospheric circulation |
+
+Each mode builds on the previous, adding physics at the cost of computational expense.
+
+## Mode 1: 1D Latitude Bands
+
+### When to Use
+
+- **Prototyping:** Test parameter changes in seconds
+- **Education:** Understand energy balance without spatial complexity
+- **Debugging:** Isolate latitudinal feedbacks
+
+### Characteristics
+
+```julia
+moon = HotMoonBody(18)  # 18 latitude bands (5° resolution)
+T0 = fill(285.0, 18)    # Uniform initial temperature
+
+sol = run_simulation(moon, 500, T0)
+```
+
+**State vector:**
+- Size: `n_lat` (typically 18)
+- Units: Temperature in Kelvin
+- Memory: ~150 bytes
+
+**Physics included:**
+- Solar heating with rotation (day/night averaged per band)
+- Ice-albedo feedback
+- Fixed greenhouse (no moisture)
+- Latitude-based heat capacity
+- Heat transport between adjacent bands
+- Eclipses (global synchronization)
+
+**Physics omitted:**
+- Longitudinal variation (no east-west gradients)
+- Terrain effects
+- Moisture/precipitation
+- Biome diversity
+
+### Performance
+
+| Resolution | ODEs | Time/1000 hr | Equilibration |
+|------------|------|--------------|---------------|
+| 12 bands   | 12   | ~1 sec       | 200 hr        |
+| 18 bands   | 18   | ~2 sec       | 300 hr        |
+| 36 bands   | 36   | ~5 sec       | 500 hr        |
+
+<Info>
+**Recommended:** Start with 18 bands for ~5° resolution — good balance of detail and speed.
+</Info>
+
+### Example Output
+
+Typical equilibrium temperature profile:
+
+| Latitude | Mean T (K) | Mean T (°C) | Interpretation |
+|----------|------------|-------------|----------------|
+| 85°      | 240        | -33         | Polar (frozen) |
+| 65°      | 265        | -8          | Subpolar       |
+| 45°      | 280        | 7           | Mid-latitude   |
+| 25°      | 295        | 22          | Subtropical    |
+| 5°       | 305        | 32          | Tropical       |
+
+Pole-to-equator gradient: ~65 K
+
+### Limitations
+
+<Note>
+**No day-night cycle** — Solar heating is averaged over longitude. The subsolar point motion is implicit.
+</Note>
+
+For explicit day-night patterns, use 2D modes.
+
+## Mode 2: 2D Temperature Only
+
+### When to Use
+
+- **Spatial patterns:** Visualize day-night terminator and terrain effects
+- **Terrain studies:** Understand mountain rain shadows (temperature component)
+- **Animations:** Create rotating globe visualizations
+
+### Characteristics
+
+```julia
+moon = HotMoonBody(90, 180, seed=42, sea_level=0.0)
+T0 = fill(285.0, 90, 180)
+
+sol = run_simulation(moon, 5000, T0)
+```
+
+**State vector:**
+- Size: `n_lat × n_lon` (typically 16,200 for 90×180)
+- Units: Temperature in Kelvin
+- Memory: ~130 KB
+
+**Physics included:**
+- All from 1D, plus:
+- Explicit day-night cycle with moving subsolar point
+- Procedurally generated terrain (fractal noise)
+- Terrain-modulated heat transport
+  - Mountains block transport
+  - Downhill flow preference
+  - Ocean current bonus
+- Elevation-dependent greenhouse (thinner air at altitude)
+- Elevation-based heat capacity (ocean/land/mountain)
+
+**Physics omitted:**
+- Moisture transport
+- Evaporation/precipitation
+- Latent heat coupling
+- Biome-specific heat capacity
+
+### Terrain Generation
+
+Terrain is created using fractal Brownian motion:
+
+```julia
+moon = HotMoonBody(90, 180,
+    seed=42,        # Random seed (reproducible)
+    sea_level=0.1,  # Higher = more ocean
+    scale=0.02,     # Smaller = larger landmasses
+    octaves=3       # Fewer = smoother terrain
+)
+```
+
+**Elevation range:** Normalized to [-1, 1]
+- `elev < 0` — Ocean
+- `0 < elev < 0.5` — Lowlands/coastal
+- `0.5 < elev < 1.0` — Mountains
+
+### Performance
+
+| Resolution | Cells | Time/1000 hr | Threads | Memory |
+|------------|-------|--------------|---------|--------|
+| 45×90      | 4,050 | ~30 sec      | 4       | 32 KB  |
+| 90×180     | 16,200| ~2 min       | 4       | 130 KB |
+| 180×360    | 64,800| ~10 min      | 8       | 520 KB |
+
+<Info>
+**Enable threading:** Run with `julia -t 4` for ~3× speedup on 2D simulations.
+</Info>
+
+### Typical Results
+
+Day-night temperature contrast:
+
+| Terrain Type | ΔT (day - night) |
+|--------------|------------------|
+| Deep ocean   | 15 K             |
+| Shallow ocean| 20 K             |
+| Coastal land | 35 K             |
+| Desert       | 60 K             |
+| Mountains    | 40 K             |
+
+Eclipses cause **global 10-20 K cooling** lasting 4 hours.
+
+## Mode 3: 2D + Moisture Coupling
+
+### When to Use
+
+- **Realistic climate:** Include water cycle feedbacks
+- **Biome emergence:** See forests, deserts, ice sheets
+- **Precipitation patterns:** Identify monsoons and rain shadows
+- **Publication-quality:** Most complete single-layer model
+
+### Characteristics
+
+```julia
+moon = HotMoonBody(90, 180)
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+
+sol = run_simulation_with_moisture(moon, 10000, T0, M0)
+```
+
+**State vector:**
+- Size: `2 × n_lat × n_lon` (32,400 for 90×180)
+- Variables: Temperature (K), Moisture (kg/m²)
+- Memory: ~260 KB
+
+**Physics included:**
+- All from 2D temperature, plus:
+- Clausius-Clapeyron moisture saturation
+- Ocean evaporation (temperature-dependent)
+- Orographic precipitation (altitude-triggered)
+- Moisture diffusion (terrain-blocked, 2× stronger barriers than heat)
+- Water vapor greenhouse effect (logarithmic)
+- Latent heat coupling (precipitation warms, evaporation cools)
+- Biome-blended heat capacity (12 types)
+
+### Moisture Dynamics
+
+The moisture equation:
+
+```julia
+dM/dt = evap(T, elev) - precip(M, T, elev) + transport(M_neighbors)
+```
+
+<Tabs>
+  <Tab title="Ocean Evaporation">
+    ```julia
+    if elevation < 0 && T > 273.15 K:
+        evap = 3×10⁻⁶ × (T - 273.15)  # kg·m⁻²·s⁻¹
+    else:
+        evap = 0
+    ```
+    
+    Only ocean cells contribute moisture.
+    
+    **Example:** At 20°C (293 K), evaporation = 6×10⁻⁵ kg·m⁻²·s⁻¹
+  </Tab>
+  
+  <Tab title="Orographic Precipitation">
+    ```julia
+    T_altitude = T - 6.5×10⁻³ × (elevation × 5000)  # Lapse rate
+    M_sat = 5.0 × exp(17 × (T_altitude - 273.15) / 273.15)
+    
+    if M > M_sat:
+        precip = 0.002 × (M - M_sat)  # s⁻¹
+    ```
+    
+    Mountains cool air → lower saturation → rain out excess.
+  </Tab>
+  
+  <Tab title="Moisture Transport">
+    ```julia
+    dM/dt += Σ (7×10⁻⁵ × coeff_moisture × (M_neighbor - M))
+    ```
+    
+    Moisture diffuses like heat but with **stronger mountain barriers**:
+    - Heat barrier strength: 4.0
+    - Moisture barrier strength: 8.0
+    
+    This creates pronounced rain shadows.
+  </Tab>
+</Tabs>
+
+### Biome Classification
+
+At equilibrium, cells are classified into 12 biomes:
+
+| Biome | Temperature | Moisture | Elevation |
+|-------|-------------|----------|------------|
+| Ocean | Any | Any | < 0 |
+| Ice Sheet | < -10°C | Any | ≥ 0 |
+| Tundra | -10 to 0°C | Any | ≥ 0 |
+| Boreal Forest | 0-10°C | ≥ 3 kg/m² | 0-0.5 |
+| Cold Steppe | 0-10°C | < 3 kg/m² | 0-0.5 |
+| Temperate Forest | 10-20°C | ≥ 4 kg/m² | 0-0.5 |
+| Grassland | 10-20°C | < 4 kg/m² | 0-0.5 |
+| Tropical Forest | > 20°C | ≥ 5 kg/m² | 0-0.5 |
+| Savanna | > 20°C | 2-5 kg/m² | 0-0.5 |
+| Hot Desert | > 20°C | < 2 kg/m² | 0-0.5 |
+| Mountain | Any | Any | > 0.5 |
+| Wetland | Any | Any | 0-0.1 |
+
+<Info>
+Biomes **emerge** from physics — they are not prescribed inputs but rather diagnostic outputs.
+</Info>
+
+### Performance
+
+| Resolution | State Size | Time/1000 hr | Threads | Equilibration |
+|------------|------------|--------------|---------|---------------|
+| 45×90      | 8,100      | ~1 min       | 4       | 5,000 hr      |
+| 90×180     | 32,400     | ~4 min       | 4       | 10,000 hr     |
+| 180×360    | 129,600    | ~20 min      | 8       | 15,000 hr     |
+
+<Note>
+Moisture coupling **doubles** state size and increases stiffness. Use higher thread counts.
+</Note>
+
+### Typical Moisture Patterns
+
+| Region | Column Moisture (kg/m²) |
+|--------|-------------------------|
+| Deep ocean (warm) | 15-25 |
+| Coastal regions | 8-15 |
+| Inland continents | 2-6 |
+| Mountain windward | 10-20 |
+| Mountain leeward (rain shadow) | 0.5-2 |
+| Polar regions | 0.1-1 |
+
+## Mode 4: Two-Layer Atmosphere
+
+### When to Use
+
+- **Atmospheric circulation:** Model Hadley-like cells
+- **Subtropical dry zones:** Understand descending branch drying
+- **Advanced research:** Most complete physics
+
+<Note>
+**Experimental:** Two-layer mode is under active development. Use for research, not production.
+</Note>
+
+### Characteristics
+
+```julia
+moon = HotMoonBody(45, 90)  # Coarser grid recommended
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+U0 = fill(1.0, 45, 90)      # Upper atmosphere mass (normalized)
+M_up0 = fill(0.05, 45, 90)  # Upper moisture
+
+sol = run_simulation_with_twolayer_atmosphere(
+    moon, 15000, T0, M0, U0=U0, M_up0=M_up0
+)
+```
+
+**State vector:**
+- Size: `4 × n_lat × n_lon` (16,200 for 45×90)
+- Variables: T_surface, M_surface, U_upper, M_upper
+- Memory: ~130 KB
+
+**Physics included:**
+- All from moisture mode, plus:
+- Upper atmosphere mass (convective uplift/subsidence)
+- Upper atmosphere moisture transport
+- Vertical moisture exchange
+- Subtropical subsidence drying
+
+### Additional Equations
+
+Vertical mass exchange:
+
+```julia
+if T_surface > T_convection:
+    uplift_rate = k_uplift × (T_surface - T_convection)
+    dU/dt = uplift_rate  # Upper mass increases
+else:
+    subsidence_rate = k_subsidence × U
+    dU/dt = -subsidence_rate  # Upper mass decreases
+end
+```
+
+Vertical moisture flux:
+
+```julia
+if uplift > 0:
+    M_flux_up = uplift × M_surface  # Convection carries moisture up
+    dM_surface/dt -= M_flux_up
+    dM_upper/dt += M_flux_up
+else:
+    M_flux_down = subsidence × M_upper  # Subsidence brings dry air down
+    dM_surface/dt += M_flux_down
+    dM_upper/dt -= M_flux_down
+end
+```
+
+### Performance
+
+| Resolution | State Size | Time/1000 hr | Threads | Recommended Duration |
+|------------|------------|--------------|---------|----------------------|
+| 45×90      | 16,200     | ~5 min       | 4       | 15,000 hr            |
+| 90×180     | 64,800     | ~25 min      | 8       | 20,000 hr            |
+
+<Info>
+Two-layer mode is **2-3× slower** than moisture mode. Use coarser grids (45×90) initially.
+</Info>
+
+## Choosing a Mode
+
+Decision tree:
+
+```
+Do you need spatial patterns?
+├─ No → Use 1D (fast prototyping)
+└─ Yes
+    │
+    Do you need water cycle?
+    ├─ No → Use 2D Temperature (terrain effects only)
+    └─ Yes
+        │
+        Do you need atmospheric circulation?
+        ├─ No → Use 2D + Moisture (recommended for most science)
+        └─ Yes → Use Two-Layer (research)
+```
+
+## Resolution Guidelines
+
+### 1D
+
+| Bands | Resolution | Use Case |
+|-------|------------|----------|
+| 12    | 7.5°       | Quick tests |
+| 18    | 5.0°       | **Standard** |
+| 36    | 2.5°       | High detail |
+
+### 2D
+
+| Grid | Cell Size | Use Case |
+|------|-----------|----------|
+| 45×90 | 4° × 4° | Rapid testing |
+| 90×180 | 2° × 2° | **Standard** (most simulations) |
+| 180×360 | 1° × 1° | Publication quality |
+| 360×720 | 0.5° × 0.5° | Extreme detail (slow) |
+
+<Note>
+**Rule of thumb:** 2D resolution should be at least 2× the terrain feature scale you want to resolve.
+</Note>
+
+## Initial Conditions
+
+### Manual Initialization
+
+```julia
+# Uniform
+T0 = fill(285.0, 90, 180)
+M0 = fill(3.0, 90, 180)
+
+# Latitude gradient
+T0 = [310.0 - 60.0 * (lat/90)^2 for lat in moon.latitudes, _ in 1:180]
+```
+
+### Automated Initialization
+
+```julia
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+```
+
+This helper:
+1. Sets temperature gradient (310 K equator → 250 K pole)
+2. Distributes moisture near oceans using diffusion
+3. Caps moisture at 80% of local saturation
+4. Typically reaches quasi-equilibrium in ~5,000 hours
+
+<Info>
+**Recommended:** Use automated initialization for moisture modes to avoid unphysical spin-up.
+</Info>
+
+## Simulation Duration
+
+| Goal | Recommended Duration |
+|------|----------------------|
+| Visual test | 200-500 hr |
+| Day-night equilibrium | 1,000-2,000 hr |
+| Seasonal equilibrium | 5,000-10,000 hr |
+| Full climate equilibrium | 15,000-50,000 hr |
+| Deep ocean equilibration | 100,000+ hr |
+
+**Equilibrium test:** Global mean temperature changes < 0.1 K per 1000 hours.
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run your first simulation in 5 minutes
+  </Card>
+  
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand the framework design
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/moon-types">
+    Detailed function documentation
+  </Card>
+</CardGroup>

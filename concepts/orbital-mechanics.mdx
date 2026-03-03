@@ -1,0 +1,401 @@
+---
+title: Orbital Mechanics
+description: 28-hour rotation, 64-hour orbit around gas giant, eclipse dynamics
+---
+
+## System Overview
+
+The Hot Moon orbits a gas giant exoplanet with **non-synchronous rotation**, creating dynamic day-night cycles and periodic eclipses:
+
+<div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem', margin: '2rem 0'}}>
+  <div>
+    **Rotation Period**
+    
+    28 hours = 100,800 seconds
+    
+    Time for one full rotation on its axis
+  </div>
+  <div>
+    **Orbital Period**
+    
+    64 hours = 230,400 seconds
+    
+    Time to complete one orbit around the planet
+  </div>
+  <div>
+    **Eclipse Duration**
+    
+    4 hours = 14,400 seconds
+    
+    Time spent in planet's shadow
+  </div>
+</div>
+
+<Note>
+The rotation period is **slower than Earth's 24 hours**, leading to extended day/night cycles with larger temperature swings.
+</Note>
+
+## Non-Synchronous Rotation
+
+Unlike Earth's moon (which is tidally locked), the Hot Moon rotates independently:
+
+```julia
+ROTATION_PERIOD = 28.0 * 3600   # 28 hours
+ORBITAL_PERIOD  = 64.0 * 3600   # 64 hours
+```
+
+**Period ratio:** 64 / 28 = 2.286 rotations per orbit
+
+This means:
+- Every surface location experiences **day and night**
+- The subsolar point moves westward continuously
+- No permanently dark or bright hemispheres
+
+### Subsolar Point Motion
+
+The subsolar longitude advances at:
+
+```julia
+ω_rotation = 360° / 28 hours = 12.857°/hour
+```
+
+Starting from `lon = 0°` at `t = 0` (local noon):
+
+| Time (hours) | Subsolar Longitude | Local Solar Time at 0° |
+|--------------|-------------------|------------------------|
+| 0            | 0°                | Noon                   |
+| 7            | 90° W             | Sunset                 |
+| 14           | 180° W            | Midnight               |
+| 21           | 270° W            | Sunrise                |
+| 28           | 360° W (0°)       | Noon again             |
+
+## Solar Zenith Angle
+
+### 1D Model (Latitude Only)
+
+Assuming the moon rotates around a north-south axis:
+
+```julia
+function get_zenith(t, lat_deg)
+    phase = (t / ROTATION_PERIOD) % 1.0  # Rotation phase [0,1)
+    lat = deg2rad(lat_deg)
+    hour_angle = 2π * phase
+    
+    cos_zenith = cos(lat) * cos(hour_angle)
+    
+    if cos_zenith <= 0
+        return nothing  # Sun below horizon
+    end
+    
+    return acos(cos_zenith)
+end
+```
+
+**Key assumptions:**
+- Subsolar point always at equator (no seasons)
+- Hour angle = 0 when t = 0 (noon at equator)
+- Zenith = 0 when sun directly overhead
+
+<Tabs>
+  <Tab title="Equator (0°)">
+    ```julia
+    cos(zenith) = cos(0) × cos(hour_angle) = cos(hour_angle)
+    ```
+    
+    | Time | Hour Angle | Zenith | Sun Position |
+    |------|------------|--------|---------------|
+    | 0 hr | 0°         | 0°     | Overhead      |
+    | 7 hr | 90°        | 90°    | Horizon       |
+    | 14 hr| 180°       | —      | Below horizon |
+    | 21 hr| 270°       | 90°    | Horizon       |
+    
+    **Day length:** 14 hours (50% of rotation period)
+  </Tab>
+  
+  <Tab title="Mid-Latitude (45°)">
+    ```julia
+    cos(zenith) = cos(45°) × cos(hour_angle) = 0.707 × cos(hour_angle)
+    ```
+    
+    | Time | Hour Angle | cos(zenith) | Zenith |
+    |------|------------|-------------|--------|
+    | 0 hr | 0°         | 0.707       | 45°    |
+    | 7 hr | 90°        | 0.0         | 90°    |
+    | 14 hr| 180°       | -0.707      | —      |
+    
+    **Day length:** 14 hours (same as equator in this simplified model)
+  </Tab>
+  
+  <Tab title="Pole (90°)">
+    ```julia
+    cos(zenith) = cos(90°) × cos(hour_angle) = 0
+    ```
+    
+    **Always night** — sun never rises in this 1D model with no axial tilt.
+  </Tab>
+</Tabs>
+
+### 2D Model (Latitude + Longitude)
+
+Longitude adds a phase offset to the hour angle:
+
+```julia
+function get_zenith_2d(t, lat_deg, lon_deg)
+    hour_angle = 2π * (t / ROTATION_PERIOD) + deg2rad(lon_deg)
+    lat = deg2rad(lat_deg)
+    
+    cos_zenith = cos(lat) * cos(hour_angle)
+    
+    if cos_zenith <= 0
+        return nothing
+    end
+    
+    return acos(cos_zenith)
+end
+```
+
+**Longitude convention:**
+- `lon = 0°` is at noon when `t = 0`
+- `lon = 90°` is 7 hours ahead (already experienced sunrise)
+- `lon = -90°` (270°) is 7 hours behind (still nighttime)
+
+**Example:** At `t = 10000 seconds` (~2.78 hours):
+
+| Longitude | Hour Angle | Local Time | Zenith (at equator) |
+|-----------|------------|------------|---------------------|
+| 0°        | 40°        | ~10:30 AM  | 40°                 |
+| 90°       | 130°       | ~4:30 PM   | 130° (setting)      |
+| 180°      | 220°       | ~10:30 PM  | Night               |
+| 270°      | 310°       | ~4:30 AM   | 50° (rising)        |
+
+## Eclipse Mechanics
+
+Every 64 hours, the moon passes behind its parent planet for 4 hours:
+
+```julia
+function is_eclipsed(t)
+    orbital_phase = (t % ORBITAL_PERIOD) / ORBITAL_PERIOD  # [0, 1)
+    eclipse_half_width = (ECLIPSE_DURATION / ORBITAL_PERIOD) / 2
+    
+    return abs(orbital_phase - 0.5) < eclipse_half_width
+end
+```
+
+### Eclipse Timing
+
+**Eclipse center:** Orbital phase = 0.5 (halfway through orbit)
+
+**Eclipse half-width:**
+```julia
+ε = (4 hours / 64 hours) / 2 = 0.03125
+```
+
+**Eclipse window:**
+```julia
+phase ∈ [0.46875, 0.53125]
+```
+
+Converting to absolute time:
+
+| Orbit Number | Eclipse Start | Eclipse Mid | Eclipse End |
+|--------------|---------------|-------------|-------------|
+| 0            | 30 hr         | 32 hr       | 34 hr       |
+| 1            | 94 hr         | 96 hr       | 98 hr       |
+| 2            | 158 hr        | 160 hr      | 162 hr      |
+| n            | 64n+30        | 64n+32      | 64n+34      |
+
+<Info>
+**Physical interpretation:** The planet blocks all sunlight globally. This creates synchronized cooling events every ~2.7 days.
+</Info>
+
+### Eclipse vs. Night
+
+Key distinction:
+
+<Tabs>
+  <Tab title="Normal Night">
+    - Caused by **rotation** (local geometry)
+    - Different locations experience night at different times
+    - Duration: ~14 hours at most latitudes
+    - Half the moon is always in night
+  </Tab>
+  
+  <Tab title="Eclipse">
+    - Caused by **orbital position** (moon behind planet)
+    - **All locations** experience darkness simultaneously
+    - Duration: Exactly 4 hours
+    - Entire moon is dark
+  </Tab>
+</Tabs>
+
+### Eclipse Impact on Solar Heating
+
+```julia
+function get_solar_2d(t, lat, lon, T)
+    if is_eclipsed(t)
+        return 0.0  # No solar input anywhere on moon
+    end
+    
+    zenith = get_zenith_2d(t, lat, lon)
+    if zenith === nothing
+        return 0.0  # Local nighttime
+    end
+    
+    # Normal solar heating calculation
+    cos_zenith = cos(zenith)
+    albedo = compute_surface_albedo(T)
+    transmission = exp(-SOLAR_OPTICAL_DEPTH / (cos_zenith + 0.01))
+    
+    return SOLAR_CONSTANT * cos_zenith * (1 - albedo) * transmission
+end
+```
+
+**Priority:**
+1. Check eclipse (global)
+2. Check zenith angle (local)
+3. Calculate solar flux
+
+## Solar Constant
+
+The stellar flux at the moon's orbit:
+
+```julia
+SOLAR_CONSTANT = 2100 W/m²
+```
+
+Comparison:
+- **Earth:** 1361 W/m²
+- **Hot Moon:** 2100 W/m²
+- **Ratio:** 1.54× Earth's insolation
+
+This higher flux compensates for the slower rotation (longer nights) to maintain habitable temperatures.
+
+### Equivalent Temperature
+
+For a gray body with no atmosphere:
+
+```julia
+T_eq = (S₀ × (1 - α) / (4σε))^0.25
+```
+
+With `α = 0.3` (average albedo), `ε = 0.95`:
+
+```julia
+T_eq = (2100 × 0.7 / (4 × 5.67×10⁻⁸ × 0.95))^0.25 ≈ 270 K (-3°C)
+```
+
+<Note>
+The actual global mean is **higher** (~285 K) due to greenhouse warming from the atmosphere.
+</Note>
+
+## Day-Night Temperature Contrast
+
+### Theoretical Maximum
+
+At the equator with no heat transport:
+
+**Daytime (zenith = 0°, no eclipse):**
+```julia
+Q_in = 2100 × (1 - 0.3) = 1470 W/m²
+T_day ≈ (1470 / (σε))^0.25 ≈ 370 K (97°C)
+```
+
+**Nighttime:**
+```julia
+Q_in = 0
+T_night → 0 K (if no heat capacity or transport)
+```
+
+### Simulated Contrast
+
+With realistic heat transport and capacity:
+
+| Location | Day-Night ΔT |
+|----------|-------------|
+| Equatorial ocean | 15-20 K |
+| Mid-latitude land | 30-40 K |
+| Polar regions | 5-10 K |
+| Desert (low C) | 50-70 K |
+
+The 28-hour period is **long enough** to create significant swings but **short enough** that heat transport moderates extremes.
+
+## Rotation vs. Orbital Timescales
+
+### Pattern Repetition
+
+The subsolar point repeats its pattern after:
+
+```julia
+LCM(28, 64) = 896 hours ≈ 37.3 days
+```
+
+After this time:
+- Moon completes 32 rotations
+- Moon completes 14 orbits
+- Subsolar longitude returns to starting position
+
+### Implications for Simulation Length
+
+To observe full equilibration:
+
+| Phenomenon | Timescale | Recommended Sim Length |
+|------------|-----------|------------------------|
+| Diurnal cycle | 28 hr | 100-200 hr (several days) |
+| Eclipse cycle | 64 hr | 500-1000 hr (several orbits) |
+| Seasonal pattern | 896 hr | 2000-5000 hr |
+| Full equilibration | — | 10,000-50,000 hr |
+
+<Info>
+Most simulations run **5,000-15,000 hours** to capture quasi-equilibrium climate states.
+</Info>
+
+## Orbital Energy Budget
+
+Average solar input over one orbit:
+
+```julia
+Q_avg = (60 hr / 64 hr) × (S₀ / 4) × (1 - α_avg)
+      = 0.9375 × 525 × 0.7
+      ≈ 345 W/m²
+```
+
+Factor breakdown:
+- `60/64` — Eclipse duty cycle (4 hours of darkness per 64-hour orbit)
+- `S₀/4` — Geometric factor for spherical averaging
+- `1 - α_avg` — Absorbed fraction
+
+This must equal average outgoing longwave for equilibrium:
+
+```julia
+OLR_avg = ε × σ × T_avg⁴ × τ_avg
+```
+
+Solving for `T_avg` gives the global mean temperature (~285 K for typical greenhouse).
+
+## Example: Tracking a Surface Point
+
+Consider a point at **lat = 0°, lon = 0°**:
+
+| Time (hr) | Rotation Phase | Orbital Phase | Solar Zenith | Eclipse? | Heating |
+|-----------|----------------|---------------|--------------|----------|----------|
+| 0         | Noon           | 0.00          | 0°           | No       | Maximum  |
+| 14        | Midnight       | 0.22          | —            | No       | Zero     |
+| 28        | Noon           | 0.44          | 0°           | No       | Maximum  |
+| 32        | ~3 PM          | 0.50          | 54°          | **Yes**  | Zero     |
+| 42        | ~6 AM          | 0.66          | 54°          | No       | Moderate |
+| 56        | ~6 PM          | 0.88          | 54°          | No       | Moderate |
+| 64        | Midnight       | 0.00          | —            | No       | Zero     |
+
+**Key observation:** Eclipse timing **drifts relative to local solar time** due to incommensurable periods.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Physics Model" icon="atom" href="/concepts/physics-model">
+    How solar geometry translates to heating rates
+  </Card>
+  
+  <Card title="Simulation Modes" icon="sliders" href="/concepts/simulation-modes">
+    Choosing resolution and complexity for your simulation
+  </Card>
+</CardGroup>

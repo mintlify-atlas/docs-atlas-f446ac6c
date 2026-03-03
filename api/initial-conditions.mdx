@@ -1,0 +1,478 @@
+---
+title: 'Initial Conditions'
+description: 'Estimate physically consistent starting states for simulations'
+---
+
+## Overview
+
+Initial condition functions estimate equilibrium temperature and moisture fields based on latitude, elevation, and ocean/land distribution. These provide physically realistic starting points that reduce simulation spin-up time.
+
+The initialization pipeline:
+1. Estimate latitude-based equilibrium temperature
+2. Apply altitude cooling via lapse rate
+3. Initialize ocean cells to saturation moisture
+4. Diffuse moisture from ocean to land
+5. Cap moisture at saturation limits
+
+---
+
+## estimate_initial_temperature_and_moisture
+
+Main function to estimate initial conditions for a 2D moon.
+
+```julia
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+```
+
+<ParamField path="moon" type="MoonBody2D" required>
+  The 2D moon body containing grid dimensions, latitude/longitude coordinates, and elevation data.
+</ParamField>
+
+### Returns
+
+A tuple `(T0, M0)` where:
+- `T0::Matrix{Float64}`: Initial temperature field (K), dimensions `(n_lat, n_lon)`
+- `M0::Matrix{Float64}`: Initial moisture field (kg/m²), dimensions `(n_lat, n_lon)`
+
+### Example
+
+```julia
+using HotMoon
+
+# Create a 2D moon with custom terrain
+moon = HotMoonBody(90, 180, seed=42, sea_level=0.1, scale=0.02)
+
+# Estimate initial conditions
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+
+println("Temperature range: $(minimum(T0) - 273.15)°C to $(maximum(T0) - 273.15)°C")
+println("Moisture range: $(minimum(M0)) to $(maximum(M0)) kg/m²")
+
+# Use in simulation
+sol = run_simulation_with_moisture(moon, 15000.0, T0, M0)
+```
+
+**Typical output:**
+```
+Temperature range: -23.4°C to 36.7°C
+Moisture range: 0.0 to 4.8 kg/m²
+```
+
+<Note>
+This function applies the full initialization pipeline:
+1. `initialize_equilibrium_temperature_field!()` - Sets temperature based on latitude and elevation
+2. `initialize_ocean_cells_to_saturation!()` - Ocean cells get saturated moisture, land starts dry
+3. `diffuse_moisture_from_ocean_to_land!()` - Spreads moisture inland (15 iterations by default)
+4. `cap_moisture_at_saturation_fraction!()` - Prevents oversaturation (caps at 80% of local saturation)
+
+For temperature-only simulations, you can use just the temperature field: `T0, _ = estimate_initial_temperature_and_moisture(moon)`.
+</Note>
+
+---
+
+## estimate_latitude_equilibrium_temperature
+
+Estimate equilibrium temperature based solely on latitude.
+
+```julia
+T_eq = estimate_latitude_equilibrium_temperature(lat_deg)
+```
+
+<ParamField path="lat_deg" type="Real" required>
+  Latitude in degrees (-90 to +90, where 0 is the equator).
+</ParamField>
+
+### Returns
+
+Equilibrium temperature in Kelvin, based on radiative balance assuming `T ∝ cos(lat)^0.25`.
+
+### Example
+
+```julia
+# Estimate temperatures at different latitudes
+T_equator = estimate_latitude_equilibrium_temperature(0.0)
+T_midlat = estimate_latitude_equilibrium_temperature(45.0)
+T_pole = estimate_latitude_equilibrium_temperature(90.0)
+
+println("Equator: $(T_equator - 273.15)°C")  # ~37°C
+println("Mid-latitude: $(T_midlat - 273.15)°C")  # ~25°C
+println("Pole: $(T_pole - 273.15)°C")  # ~-23°C
+```
+
+<Note>
+**Physics:** The `cos(lat)^0.25` relationship comes from radiative balance. Solar input scales as `cos(lat)` (zenith angle effect), and outgoing radiation scales as `T⁴` (Stefan-Boltzmann), so `T ∝ cos(lat)^0.25`.
+
+Constants used:
+- `INIT_T_EQUATOR = 310.0 K` (36.85°C)
+- `INIT_T_POLE = 250.0 K` (-23.15°C)
+</Note>
+
+---
+
+## estimate_altitude_adjusted_temperature
+
+Adjust base temperature for altitude using the atmospheric lapse rate.
+
+```julia
+T_adjusted = estimate_altitude_adjusted_temperature(T_base, elevation)
+```
+
+<ParamField path="T_base" type="Real" required>
+  Base temperature in Kelvin (typically from latitude-based estimate).
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation (-1 to +1, where negative is ocean, positive is land).
+</ParamField>
+
+### Returns
+
+Temperature in Kelvin after applying altitude cooling. Ocean cells (elevation < 0) return `T_base` unchanged. Land cells are cooled by the lapse rate.
+
+### Example
+
+```julia
+# Base temperature at equator
+T_sea_level = estimate_latitude_equilibrium_temperature(0.0)  # ~310 K
+
+# Ocean cell (negative elevation)
+T_ocean = estimate_altitude_adjusted_temperature(T_sea_level, -0.3)
+println("Ocean: $(T_ocean - 273.15)°C")  # ~37°C (unchanged)
+
+# Low elevation land
+T_coast = estimate_altitude_adjusted_temperature(T_sea_level, 0.1)
+println("Coast: $(T_coast - 273.15)°C")  # ~34°C (slight cooling)
+
+# Mountain peak
+T_mountain = estimate_altitude_adjusted_temperature(T_sea_level, 0.9)
+println("Mountain: $(T_mountain - 273.15)°C")  # ~7°C (strong cooling)
+```
+
+<Note>
+**Physics:** Temperature decreases with altitude in the troposphere due to adiabatic expansion. The standard lapse rate is 6.5 K/km.
+
+Constants:
+- `LAPSE_RATE = 6.5e-3 K/m` (6.5°C per kilometer)
+- `ELEVATION_SCALE = 5000.0 m` (normalized elevation 1.0 = 5000 meters)
+
+The function ensures temperature never drops below 200 K (-73°C), even on the highest peaks.
+</Note>
+
+---
+
+## estimate_cell_equilibrium_temperature
+
+Estimate equilibrium temperature for a single grid cell.
+
+```julia
+T_eq = estimate_cell_equilibrium_temperature(lat, elevation)
+```
+
+<ParamField path="lat" type="Real" required>
+  Latitude in degrees.
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation (-1 to +1).
+</ParamField>
+
+### Returns
+
+Equilibrium temperature in Kelvin, combining latitude-based temperature with altitude adjustment.
+
+### Example
+
+```julia
+# Equatorial ocean
+T1 = estimate_cell_equilibrium_temperature(0.0, -0.5)
+println("Equatorial ocean: $(T1 - 273.15)°C")  # ~37°C
+
+# Mid-latitude lowland
+T2 = estimate_cell_equilibrium_temperature(45.0, 0.2)
+println("Mid-latitude lowland: $(T2 - 273.15)°C")  # ~19°C
+
+# Polar mountain
+T3 = estimate_cell_equilibrium_temperature(80.0, 0.8)
+println("Polar mountain: $(T3 - 273.15)°C")  # ~-49°C
+```
+
+<Note>
+This is a convenience wrapper that combines:
+1. `estimate_latitude_equilibrium_temperature(lat)`
+2. `estimate_altitude_adjusted_temperature(T_base, elevation)`
+
+It's used internally by `initialize_equilibrium_temperature_field!()`.
+</Note>
+
+---
+
+## initialize_equilibrium_temperature_field!
+
+Fill a temperature matrix with equilibrium estimates.
+
+```julia
+initialize_equilibrium_temperature_field!(T0, moon)
+```
+
+<ParamField path="T0" type="Matrix" required>
+  Pre-allocated temperature matrix to fill. Must have dimensions `(moon.n_lat, moon.n_lon)`.
+</ParamField>
+
+<ParamField path="moon" type="MoonBody2D" required>
+  The moon body containing latitude, longitude, and elevation data.
+</ParamField>
+
+### Returns
+
+Nothing (modifies `T0` in-place).
+
+### Example
+
+```julia
+moon = HotMoonBody(90, 180)
+
+# Pre-allocate temperature matrix
+T0 = zeros(moon.n_lat, moon.n_lon)
+
+# Fill with equilibrium estimates
+initialize_equilibrium_temperature_field!(T0, moon)
+
+# Now T0 contains physically reasonable temperatures
+println("Mean: $(sum(T0 .* moon.cell_areas) - 273.15)°C")
+```
+
+<Note>
+This function loops over all grid cells and calls `estimate_cell_equilibrium_temperature(moon.latitudes[i], moon.elevation[i,j])` for each cell.
+
+It's part of the initialization pipeline called by `estimate_initial_temperature_and_moisture()`.
+</Note>
+
+---
+
+## initialize_ocean_cells_to_saturation!
+
+Set ocean cells to saturated moisture, land cells to zero.
+
+```julia
+initialize_ocean_cells_to_saturation!(M0, T0, moon)
+```
+
+<ParamField path="M0" type="Matrix" required>
+  Pre-allocated moisture matrix to fill (kg/m²). Dimensions: `(moon.n_lat, moon.n_lon)`.
+</ParamField>
+
+<ParamField path="T0" type="Matrix" required>
+  Temperature field (K) used to calculate saturation moisture.
+</ParamField>
+
+<ParamField path="moon" type="MoonBody2D" required>
+  The moon body with elevation data.
+</ParamField>
+
+### Returns
+
+Nothing (modifies `M0` in-place).
+
+### Example
+
+```julia
+moon = HotMoonBody(90, 180, sea_level=0.1)
+T0, _ = estimate_initial_temperature_and_moisture(moon)
+
+# Pre-allocate moisture field
+M0 = zeros(moon.n_lat, moon.n_lon)
+
+# Set ocean cells to saturation
+initialize_ocean_cells_to_saturation!(M0, T0, moon)
+
+# Ocean cells now have moisture, land is dry
+ocean_cells = moon.elevation .< 0.0
+println("Ocean moisture: $(mean(M0[ocean_cells])) kg/m²")  # ~3-5 kg/m²
+println("Land moisture: $(mean(M0[.!ocean_cells])) kg/m²")  # 0.0 kg/m²
+```
+
+<Note>
+Saturation moisture is computed using the Clausius-Clapeyron equation:
+```julia
+M_sat = MOISTURE_REF_SATURATION * exp(CLAUSIUS_CLAPEYRON_SCALE * (T - MOISTURE_REF_TEMP) / T)
+```
+
+Where:
+- `MOISTURE_REF_SATURATION = 5.0 kg/m²` at reference temperature
+- `MOISTURE_REF_TEMP = 273.15 K` (0°C)
+- `CLAUSIUS_CLAPEYRON_SCALE = 17.0`
+
+Warmer ocean cells hold more moisture (exponential relationship).
+</Note>
+
+---
+
+## diffuse_moisture_from_ocean_to_land!
+
+Diffuse moisture from ocean cells onto land using transport coefficients.
+
+```julia
+diffuse_moisture_from_ocean_to_land!(M0, moon; iterations=INIT_MOISTURE_DIFFUSE_ITERS)
+```
+
+<ParamField path="M0" type="Matrix" required>
+  Moisture field (kg/m²) to diffuse. Modified in-place.
+</ParamField>
+
+<ParamField path="moon" type="MoonBody2D" required>
+  The moon body with moisture transport coefficients.
+</ParamField>
+
+<ParamField path="iterations" type="Int" default="15">
+  Number of diffusion iterations. Default is `INIT_MOISTURE_DIFFUSE_ITERS = 15`.
+</ParamField>
+
+### Returns
+
+Nothing (modifies `M0` in-place).
+
+### Example
+
+```julia
+moon = HotMoonBody(90, 180, sea_level=0.05)
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+
+# M0 already has moisture from ocean diffusion
+# But you can manually diffuse more:
+diffuse_moisture_from_ocean_to_land!(M0, moon, iterations=25)
+
+# Coastal regions now have higher moisture
+```
+
+<Note>
+**Algorithm:**
+- Ocean cells (elevation < 0) maintain their moisture values
+- Land cells average moisture from 4 neighbors, weighted by moisture transport coefficients
+- Each iteration multiplies moisture by `INIT_MOISTURE_DECAY = 0.7` to create gradual falloff
+- Mountains act as barriers (low transport coefficients limit inland penetration)
+
+**Mountain barrier effect:**
+- `MOISTURE_BARRIER_STRENGTH = 8.0` (very strong)
+- Mountain ranges create rain shadows on leeward sides
+- Coastal lowlands accumulate more moisture than interior plateaus
+
+More iterations = moisture spreads farther inland, but effect diminishes exponentially.
+</Note>
+
+---
+
+## cap_moisture_at_saturation_fraction!
+
+Cap moisture at a fraction of local saturation to avoid oversaturation.
+
+```julia
+cap_moisture_at_saturation_fraction!(M0, T0; fraction=INIT_MOISTURE_SATURATION_CAP)
+```
+
+<ParamField path="M0" type="Matrix" required>
+  Moisture field (kg/m²) to cap. Modified in-place.
+</ParamField>
+
+<ParamField path="T0" type="Matrix" required>
+  Temperature field (K) used to calculate saturation moisture.
+</ParamField>
+
+<ParamField path="fraction" type="Float64" default="0.8">
+  Maximum fraction of saturation. Default is `INIT_MOISTURE_SATURATION_CAP = 0.8` (80%).
+</ParamField>
+
+### Returns
+
+Nothing (modifies `M0` in-place).
+
+### Example
+
+```julia
+moon = HotMoonBody(90, 180)
+T0, M0 = estimate_initial_temperature_and_moisture(moon)
+
+# M0 is already capped at 80% saturation
+# But you can apply a stricter limit:
+cap_moisture_at_saturation_fraction!(M0, T0, fraction=0.5)  # 50% cap
+
+# Now no cell exceeds 50% of its local saturation
+```
+
+<Note>
+**Why cap at 80%?**
+
+Fully saturated air (100%) immediately precipitates, which is unstable for numerical initialization. Starting at 80% saturation gives the simulation room to adjust moisture fields during spin-up without triggering excessive precipitation.
+
+Saturation increases exponentially with temperature, so:
+- Cold regions (250 K): ~1 kg/m² saturation → 0.8 kg/m² cap
+- Warm regions (310 K): ~6 kg/m² saturation → 4.8 kg/m² cap
+
+This prevents cold land cells from being "over-moisturized" during the diffusion step.
+</Note>
+
+---
+
+## Initialization Pipeline
+
+The full pipeline executed by `estimate_initial_temperature_and_moisture()`:
+
+```julia
+function estimate_initial_temperature_and_moisture(moon)
+    n_lat, n_lon = moon.n_lat, moon.n_lon
+    
+    # Step 1: Allocate arrays
+    T0 = zeros(n_lat, n_lon)
+    M0 = zeros(n_lat, n_lon)
+    
+    # Step 2: Initialize temperature from latitude + elevation
+    initialize_equilibrium_temperature_field!(T0, moon)
+    
+    # Step 3: Set ocean cells to saturation, land to zero
+    initialize_ocean_cells_to_saturation!(M0, T0, moon)
+    
+    # Step 4: Diffuse moisture from ocean to land (15 iterations)
+    diffuse_moisture_from_ocean_to_land!(M0, moon)
+    
+    # Step 5: Cap moisture at 80% of local saturation
+    cap_moisture_at_saturation_fraction!(M0, T0)
+    
+    return T0, M0
+end
+```
+
+### When to Use Manual Initialization
+
+You can bypass `estimate_initial_temperature_and_moisture()` if you want:
+
+**Uniform initial conditions:**
+```julia
+T0 = fill(285.0, moon.n_lat, moon.n_lon)  # 285 K everywhere
+M0 = fill(2.0, moon.n_lat, moon.n_lon)     # 2 kg/m² everywhere
+```
+
+**Custom temperature distribution:**
+```julia
+T0 = zeros(moon.n_lat, moon.n_lon)
+for i in 1:moon.n_lat
+    # Warmer equator, colder poles
+    T0[i, :] .= 300.0 - 50.0 * abs(moon.latitudes[i]) / 90.0
+end
+```
+
+**Moisture only over ocean:**
+```julia
+M0 = zeros(moon.n_lat, moon.n_lon)
+for i in 1:moon.n_lat, j in 1:moon.n_lon
+    if moon.elevation[i, j] < 0.0
+        M0[i, j] = 3.0  # 3 kg/m² over ocean
+    end
+end
+```
+
+<Note>
+**Spin-up time:** 
+- With equilibrium initial conditions: ~2000-5000 hours to reach quasi-steady state
+- With uniform initial conditions: ~10,000-20,000 hours to reach quasi-steady state
+
+Using `estimate_initial_temperature_and_moisture()` can reduce spin-up time by 50-75%.
+</Note>

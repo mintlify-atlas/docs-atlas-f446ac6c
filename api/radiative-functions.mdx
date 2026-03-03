@@ -1,0 +1,327 @@
+---
+title: Radiative Functions
+description: Functions for computing surface albedo, ice fraction, greenhouse effect, and infrared transmissivity
+---
+
+## Overview
+
+Radiative physics functions handle albedo feedback, greenhouse effect, and infrared radiation. These functions implement the energy balance components that determine how much solar radiation is absorbed versus reflected, and how much infrared radiation escapes to space.
+
+---
+
+## Ice and Albedo
+
+### compute_ice_fraction_from_temperature
+
+Compute the fraction of surface covered by ice based on temperature.
+
+```julia
+compute_ice_fraction_from_temperature(T::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Surface temperature in Kelvin
+</ParamField>
+
+<ResponseField name="ice_fraction" type="Float64">
+  Fraction of surface covered by ice (0.0 = no ice, 1.0 = complete ice coverage)
+</ResponseField>
+
+**Implementation Details**
+
+- Uses hyperbolic tangent transition centered at freezing point (273.15 K)
+- Smooth transition width controlled by `ICE_TRANSITION_WIDTH`
+- Returns 0.5 exactly at freezing point
+- Formula: `0.5 * (1 - tanh((T - 273.15) / ICE_TRANSITION_WIDTH))`
+
+**Example**
+
+```julia
+# Cold temperature - mostly ice
+ice_frac = compute_ice_fraction_from_temperature(250.0)  # ~0.95
+
+# Near freezing - partial ice
+ice_frac = compute_ice_fraction_from_temperature(273.15)  # 0.5
+
+# Warm temperature - no ice
+ice_frac = compute_ice_fraction_from_temperature(300.0)  # ~0.05
+```
+
+---
+
+### compute_surface_albedo
+
+Calculate surface albedo with ice-albedo feedback.
+
+```julia
+compute_surface_albedo(T::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Surface temperature in Kelvin
+</ParamField>
+
+<ResponseField name="albedo" type="Float64">
+  Surface albedo (fraction of incoming solar radiation reflected, 0.0-1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- Smoothly interpolates between `BASE_ALBEDO` (warm, ~0.3) and `ICE_ALBEDO` (cold, ~0.7)
+- Uses ice fraction from temperature to blend albedos
+- Formula: `BASE_ALBEDO * (1 - ice_frac) + ICE_ALBEDO * ice_frac`
+- Creates positive feedback: colder → more ice → higher albedo → less absorption → colder
+
+**Example**
+
+```julia
+# Tropical ocean
+albedo = compute_surface_albedo(298.0)  # ~0.3 (mostly BASE_ALBEDO)
+
+# Polar ice sheet
+albedo = compute_surface_albedo(240.0)  # ~0.7 (mostly ICE_ALBEDO)
+```
+
+---
+
+## Greenhouse Effect
+
+### compute_water_vapor_optical_depth
+
+Calculate optical depth contribution from water vapor.
+
+```julia
+compute_water_vapor_optical_depth(moisture_kg_m2::Real) -> Float64
+```
+
+<ParamField path="moisture_kg_m2" type="Real" required>
+  Column-integrated atmospheric moisture in kg/m²
+</ParamField>
+
+<ResponseField name="optical_depth" type="Float64">
+  Water vapor contribution to infrared optical depth (dimensionless)
+</ResponseField>
+
+**Implementation Details**
+
+- Uses logarithmic scaling (diminishing returns at high moisture)
+- Reference moisture: `WV_REF_MOISTURE` (~10 kg/m²)
+- Scaling factor: `WV_OPTICAL_SCALE` (~0.5)
+- Formula: `WV_OPTICAL_SCALE * log(1 + max(0, moisture) / WV_REF_MOISTURE)`
+- Clamps negative moisture to zero
+
+**Example**
+
+```julia
+# Dry air
+τ_wv = compute_water_vapor_optical_depth(0.0)   # 0.0
+
+# Moderate moisture
+τ_wv = compute_water_vapor_optical_depth(10.0)  # ~0.35
+
+# Very humid
+τ_wv = compute_water_vapor_optical_depth(50.0)  # ~0.90 (logarithmic saturation)
+```
+
+---
+
+### compute_total_ir_optical_depth
+
+Calculate total infrared optical depth from permanent gases plus water vapor.
+
+```julia
+compute_total_ir_optical_depth(moisture_kg_m2::Real) -> Float64
+compute_total_ir_optical_depth() -> Float64  # Dry atmosphere version
+```
+
+<ParamField path="moisture_kg_m2" type="Real">
+  Column-integrated atmospheric moisture in kg/m² (optional, defaults to dry atmosphere)
+</ParamField>
+
+<ResponseField name="optical_depth" type="Float64">
+  Total infrared optical depth (base + water vapor)
+</ResponseField>
+
+**Implementation Details**
+
+- Base optical depth from permanent gases: `BASE_IR_OPTICAL_DEPTH` (~1.5)
+- Adds water vapor contribution if moisture is provided
+- Higher optical depth → more IR absorption → stronger greenhouse effect
+- Dry atmosphere version returns only base optical depth
+
+**Example**
+
+```julia
+# Dry atmosphere (no moisture tracking)
+τ_total = compute_total_ir_optical_depth()  # ~1.5
+
+# With moisture
+τ_total = compute_total_ir_optical_depth(20.0)  # ~2.0 (base + water vapor)
+```
+
+---
+
+### compute_ir_transmissivity_from_optical_depth
+
+Calculate fraction of surface IR radiation escaping to space.
+
+```julia
+compute_ir_transmissivity_from_optical_depth(τ::Real) -> Float64
+```
+
+<ParamField path="τ" type="Real" required>
+  Total infrared optical depth (dimensionless)
+</ParamField>
+
+<ResponseField name="transmissivity" type="Float64">
+  Fraction of surface IR radiation that reaches space (0.0-1.0)
+</ResponseField>
+
+**Implementation Details**
+
+- Uses Eddington approximation: `2 / (2 + τ)`
+- Lower transmissivity → stronger greenhouse effect (less heat escapes)
+- τ = 0 → transmissivity = 1.0 (no atmosphere, all radiation escapes)
+- τ → ∞ → transmissivity → 0 (opaque atmosphere, no radiation escapes)
+
+**Example**
+
+```julia
+# Transparent atmosphere
+trans = compute_ir_transmissivity_from_optical_depth(0.0)  # 1.0
+
+# Earth-like
+trans = compute_ir_transmissivity_from_optical_depth(1.5)  # ~0.57
+
+# Thick atmosphere
+trans = compute_ir_transmissivity_from_optical_depth(5.0)  # ~0.29
+```
+
+---
+
+### compute_effective_optical_depth_at_elevation
+
+Adjust optical depth for elevation (thinner atmosphere at altitude).
+
+```julia
+compute_effective_optical_depth_at_elevation(τ_base::Real, elevation::Real) -> Float64
+```
+
+<ParamField path="τ_base" type="Real" required>
+  Base optical depth at sea level
+</ParamField>
+
+<ParamField path="elevation" type="Real" required>
+  Normalized elevation (-1.0 = deep ocean, 0.0 = sea level, 1.0 = highest mountains)
+</ParamField>
+
+<ResponseField name="optical_depth" type="Float64">
+  Effective optical depth at the given elevation
+</ResponseField>
+
+**Implementation Details**
+
+- Higher elevations have thinner atmosphere → weaker greenhouse effect
+- Reduction factor: `ELEVATION_GREENHOUSE_REDUCTION` (~0.3)
+- Formula: `τ_base * (1 - ELEVATION_GREENHOUSE_REDUCTION * max(0, elevation))`
+- Only positive elevations (land) reduce optical depth
+- Mountains cool faster due to enhanced radiative loss
+
+**Example**
+
+```julia
+# Sea level
+τ_eff = compute_effective_optical_depth_at_elevation(1.5, 0.0)   # 1.5
+
+# Mid-elevation
+τ_eff = compute_effective_optical_depth_at_elevation(1.5, 0.5)   # ~1.28
+
+# High mountain
+τ_eff = compute_effective_optical_depth_at_elevation(1.5, 1.0)   # ~1.05
+```
+
+---
+
+## Outgoing Radiation
+
+### compute_outgoing_longwave_radiation
+
+Calculate outgoing longwave radiation from surface.
+
+```julia
+compute_outgoing_longwave_radiation(T::Real, transmissivity::Real) -> Float64
+```
+
+<ParamField path="T" type="Real" required>
+  Surface temperature in Kelvin
+</ParamField>
+
+<ParamField path="transmissivity" type="Real" required>
+  Infrared transmissivity (fraction of IR escaping to space, 0.0-1.0)
+</ParamField>
+
+<ResponseField name="radiation" type="Float64">
+  Outgoing longwave radiation in W/m²
+</ResponseField>
+
+**Implementation Details**
+
+- Stefan-Boltzmann law with greenhouse effect
+- Formula: `ε × σ × T⁴ × transmissivity`
+- `EMISSIVITY` (ε) ≈ 0.95 (surface emissivity)
+- `STEFAN_BOLTZMANN` (σ) = 5.67×10⁻⁸ W/(m²·K⁴)
+- Lower transmissivity → less heat loss → warmer equilibrium
+
+**Example**
+
+```julia
+# Transparent atmosphere (no greenhouse effect)
+Q_out = compute_outgoing_longwave_radiation(288.0, 1.0)   # ~390 W/m²
+
+# Earth-like greenhouse effect
+Q_out = compute_outgoing_longwave_radiation(288.0, 0.6)   # ~234 W/m²
+
+# Strong greenhouse effect
+Q_out = compute_outgoing_longwave_radiation(288.0, 0.3)   # ~117 W/m²
+```
+
+---
+
+## Usage in Simulation
+
+These functions are typically used together in the energy balance calculation:
+
+```julia
+# 1. Compute albedo from temperature
+albedo = compute_surface_albedo(T)
+
+# 2. Calculate absorbed solar radiation
+Q_solar_absorbed = (1 - albedo) * incoming_solar_flux
+
+# 3. Compute greenhouse effect
+τ_total = compute_total_ir_optical_depth(moisture)
+τ_eff = compute_effective_optical_depth_at_elevation(τ_total, elevation)
+transmissivity = compute_ir_transmissivity_from_optical_depth(τ_eff)
+
+# 4. Calculate outgoing radiation
+Q_out = compute_outgoing_longwave_radiation(T, transmissivity)
+
+# 5. Net energy balance
+dT/dt = (Q_solar_absorbed - Q_out + Q_transport) / heat_capacity
+```
+
+---
+
+## Physical Constants
+
+Key constants used by these functions (defined in `constants.jl`):
+
+- `FREEZING_POINT = 273.15` K
+- `ICE_TRANSITION_WIDTH = 10.0` K
+- `BASE_ALBEDO = 0.3` (warm surface)
+- `ICE_ALBEDO = 0.7` (ice/snow)
+- `BASE_IR_OPTICAL_DEPTH = 1.5` (permanent gases)
+- `WV_OPTICAL_SCALE = 0.5` (water vapor scaling)
+- `STEFAN_BOLTZMANN = 5.67e-8` W/(m²·K⁴)
+- `EMISSIVITY = 0.95`
+- `ELEVATION_GREENHOUSE_REDUCTION = 0.3`

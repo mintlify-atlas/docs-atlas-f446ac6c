@@ -1,0 +1,286 @@
+---
+title: 'Solar Geometry'
+description: 'Calculate solar zenith angles, solar heating, and eclipse detection'
+---
+
+## Overview
+
+The solar geometry module provides functions for calculating the position of the sun relative to the moon's surface, determining when eclipses occur, and computing solar heating based on atmospheric physics.
+
+All angular calculations account for the moon's rotation period of 28 hours and orbital period of 64 hours.
+
+---
+
+## get_zenith
+
+Calculate the solar zenith angle at a given time and latitude for 1D simulations.
+
+```julia
+get_zenith(t::Real, lat_deg::Real)
+```
+
+<ParamField path="t" type="Real" required>
+  Time in seconds since simulation start
+</ParamField>
+
+<ParamField path="lat_deg" type="Real" required>
+  Latitude in degrees (range: -90 to 90)
+</ParamField>
+
+<ResponseField name="return" type="Float64 or nothing">
+  Zenith angle in radians (angle between sun and vertical), or `nothing` if the sun is below the horizon
+</ResponseField>
+
+<Warning>
+  This function returns `nothing` (not `NaN` or `0.0`) when the sun is below the horizon. Always check for `nothing` using `===`:
+  
+  ```julia
+  zenith = get_zenith(t, lat_deg)
+  if zenith === nothing
+      # Sun is below horizon
+      return 0.0
+  end
+  ```
+</Warning>
+
+### Example
+
+```julia
+# Calculate zenith at equator at t=0 (noon)
+zenith = get_zenith(0.0, 0.0)
+# Returns angle in radians
+
+# Check if sun is visible
+if zenith !== nothing
+    cos_zenith = cos(zenith)
+    # Use for solar heating calculations
+end
+```
+
+---
+
+## get_zenith_2d
+
+Calculate the solar zenith angle for 2D grid cells with longitude-dependent timing.
+
+```julia
+get_zenith_2d(t::Real, lat_deg::Real, lon_deg::Real)
+```
+
+<ParamField path="t" type="Real" required>
+  Time in seconds since simulation start
+</ParamField>
+
+<ParamField path="lat_deg" type="Real" required>
+  Latitude in degrees (range: -90 to 90)
+</ParamField>
+
+<ParamField path="lon_deg" type="Real" required>
+  Longitude in degrees (range: -180 to 180 or 0 to 360)
+</ParamField>
+
+<ResponseField name="return" type="Float64 or nothing">
+  Zenith angle in radians, or `nothing` if the sun is below the horizon
+</ResponseField>
+
+### Longitude Phase Offset
+
+Each longitude experiences noon at a different time. At `t=0`:
+- Longitude 0° is at noon (sun directly overhead at equator)
+- Longitude 180° is at midnight
+
+The phase offset ensures that the solar heating pattern rotates correctly around the moon as it spins.
+
+<Warning>
+  Like `get_zenith`, this function returns `nothing` when the sun is below the horizon. Always check before using the result.
+</Warning>
+
+### Example
+
+```julia
+# Calculate zenith for a specific grid cell
+t = 3600.0  # 1 hour into simulation
+lat = 45.0  # 45°N
+lon = 90.0  # 90°E
+
+zenith = get_zenith_2d(t, lat, lon)
+if zenith !== nothing
+    # Sun is visible at this location
+    solar_elevation = π/2 - zenith
+end
+```
+
+---
+
+## get_solar
+
+Calculate solar heating rate for 1D simulations including eclipse, zenith angle, albedo, and atmospheric transmission.
+
+```julia
+get_solar(t::Real, lat_deg::Real, T::Real)
+```
+
+<ParamField path="t" type="Real" required>
+  Time in seconds since simulation start
+</ParamField>
+
+<ParamField path="lat_deg" type="Real" required>
+  Latitude in degrees (range: -90 to 90)
+</ParamField>
+
+<ParamField path="T" type="Real" required>
+  Surface temperature in Kelvin (used for temperature-dependent albedo)
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Solar heating rate in W/m² (always non-negative)
+</ResponseField>
+
+### Physics
+
+The solar heating calculation incorporates:
+
+1. **Eclipse check**: Returns 0.0 if the moon is behind the parent planet
+2. **Zenith angle**: Returns 0.0 if sun is below horizon
+3. **Cosine law**: Heating proportional to `cos(zenith)`
+4. **Surface albedo**: Temperature-dependent reflectivity (ice-albedo feedback)
+5. **Atmospheric transmission**: Beer-Lambert law with optical depth 0.25
+6. **Air mass**: Path length through atmosphere = `1/(cos(zenith) + 0.01)`
+
+The formula is:
+
+```
+Q = S₀ × cos(θ) × (1 - α) × exp(-τ × airmass)
+```
+
+Where:
+- S₀ = 2100 W/m² (solar constant, 1.54× Earth's)
+- θ = zenith angle
+- α = surface albedo (temperature-dependent)
+- τ = 0.25 (atmospheric optical depth)
+
+### Example
+
+```julia
+t = 0.0           # Noon at lon=0°
+lat = 0.0         # Equator
+T = 300.0         # 300 K surface temperature
+
+heating = get_solar(t, lat, T)
+# Returns ~1400-1600 W/m² depending on albedo
+```
+
+---
+
+## get_solar_2d
+
+Calculate solar heating for 2D grid cells with longitude-dependent solar position.
+
+```julia
+get_solar_2d(t::Real, lat_deg::Real, lon_deg::Real, T::Real)
+```
+
+<ParamField path="t" type="Real" required>
+  Time in seconds since simulation start
+</ParamField>
+
+<ParamField path="lat_deg" type="Real" required>
+  Latitude in degrees (range: -90 to 90)
+</ParamField>
+
+<ParamField path="lon_deg" type="Real" required>
+  Longitude in degrees (range: -180 to 180 or 0 to 360)
+</ParamField>
+
+<ParamField path="T" type="Real" required>
+  Surface temperature in Kelvin
+</ParamField>
+
+<ResponseField name="return" type="Float64">
+  Solar heating rate in W/m² (always non-negative)
+</ResponseField>
+
+### Difference from get_solar
+
+This function uses `get_zenith_2d` instead of `get_zenith`, which adds a longitude-dependent phase offset. This ensures that the day-night terminator sweeps around the moon as it rotates.
+
+All other physics (eclipse, albedo, transmission) are identical to the 1D version.
+
+### Example
+
+```julia
+# Calculate heating on dayside and nightside
+t = 7200.0  # 2 hours into simulation
+
+# Dayside location
+heating_day = get_solar_2d(t, 0.0, 0.0, 300.0)
+
+# Nightside location (180° away)
+heating_night = get_solar_2d(t, 0.0, 180.0, 300.0)
+# Returns 0.0 (sun below horizon)
+```
+
+---
+
+## is_eclipsed
+
+Check whether the moon is currently in eclipse behind the parent planet.
+
+```julia
+is_eclipsed(t::Real)
+```
+
+<ParamField path="t" type="Real" required>
+  Time in seconds since simulation start
+</ParamField>
+
+<ResponseField name="return" type="Bool">
+  `true` if the moon is in eclipse, `false` otherwise
+</ResponseField>
+
+### Eclipse Timing
+
+- **Orbital period**: 64 hours
+- **Eclipse duration**: 4 hours
+- **Eclipse occurs**: At orbital phase 0.5 (halfway through orbit)
+- **Eclipse geometry**: Moon passes behind planet as viewed from star
+
+The eclipse creates a 4-hour period every 64 hours where solar heating drops to zero across the entire moon.
+
+### Example
+
+```julia
+# Check eclipse status
+if is_eclipsed(t)
+    println("Moon is in shadow")
+    # Solar heating will be zero
+else
+    println("Moon is illuminated")
+    # Normal solar heating
+end
+
+# Find eclipse times in first orbit
+for hour in 0:64
+    t = hour * 3600.0
+    if is_eclipsed(t)
+        println("Eclipse at hour $hour")
+    end
+end
+# Prints: Eclipse at hours 30-34 (approximately)
+```
+
+---
+
+## Constants
+
+The solar geometry functions use these physical constants:
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SOLAR_CONSTANT` | 2100 W/m² | Stellar flux at moon's orbit (1.54× Earth) |
+| `ROTATION_PERIOD` | 28 hours | Moon's spin period |
+| `ORBITAL_PERIOD` | 64 hours | Moon's orbit around planet |
+| `ECLIPSE_DURATION` | 4 hours | Time moon spends in planet's shadow |
+| `SOLAR_OPTICAL_DEPTH` | 0.25 | Atmospheric absorption (1 = Earth-like) |
+
+See `src/constants.jl` for the complete list of simulation parameters.

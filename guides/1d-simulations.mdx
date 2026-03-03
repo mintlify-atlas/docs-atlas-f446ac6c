@@ -1,0 +1,210 @@
+---
+title: '1D Latitude-Band Simulations'
+description: 'How to run fast 1D climate simulations using latitude bands'
+---
+
+1D simulations in Hot Moon are simplified climate models that divide the moon into latitude bands without longitude variation. This approach is ideal for quick experimentation, understanding latitudinal temperature gradients, and prototyping physics changes.
+
+## When to Use 1D
+
+<Tip>
+  1D simulations run 10-100x faster than 2D equivalents, making them perfect for:
+  - Testing new physics implementations
+  - Parameter sweeps and sensitivity analysis
+  - Understanding fundamental climate patterns
+  - Educational demonstrations
+</Tip>
+
+**Limitations**: No terrain, no longitude-dependent features (no day/night asymmetry in detail), no 2D circulation patterns.
+
+## Basic 1D Simulation
+
+<Steps>
+  <Step title="Create the moon">
+    Initialize a `MoonBody1D` with your desired number of latitude bands:
+
+    ```julia
+    using HotMoon
+    
+    # 18 latitude bands (equator to pole)
+    moon = HotMoonBody(18)
+    println(moon)
+    # Output: MoonBody1D(18 latitude bands)
+    ```
+
+    <Tip>
+      Higher resolution (36-90 bands) captures polar gradients better but increases runtime. 18 bands is a good default.
+    </Tip>
+  </Step>
+
+  <Step title="Set initial conditions">
+    Create a uniform initial temperature field:
+
+    ```julia
+    T0 = fill(285.0, moon.n_lat)  # 285K = 12°C uniform
+    println("Initial temperature: $(T0[1] - 273.15)°C")
+    ```
+
+    The temperature is in Kelvin. Each element corresponds to one latitude band.
+  </Step>
+
+  <Step title="Configure progress callback">
+    Create a progress indicator for long simulations:
+
+    ```julia
+    sim_hours = 20000.0
+    progress = make_progress_callback(sim_hours, update_interval_hours=500)
+    ```
+
+    This prints progress updates every 500 simulated hours.
+  </Step>
+
+  <Step title="Run the simulation">
+    Execute the simulation using the ODE solver:
+
+    ```julia
+    @time sol = run_simulation(moon, sim_hours, T0, callback=progress)
+    ```
+
+    The solver automatically selects the 1D energy balance equations based on `moon` type.
+  </Step>
+
+  <Step title="Analyze results">
+    Extract and display final statistics:
+
+    ```julia
+    final_temps = sol.u[end] .- 273.15  # Convert to Celsius
+    global_mean = sum(final_temps .* moon.cell_areas)
+    
+    println("\nFinal statistics:")
+    println("  Global mean: $(round(global_mean, digits=1))°C")
+    println("  Equator: $(round(final_temps[1], digits=1))°C")
+    println("  Pole: $(round(final_temps[end], digits=1))°C")
+    ```
+
+    The solution `sol.u[end]` contains the final temperature for each latitude band.
+  </Step>
+</Steps>
+
+## Complete Example Script
+
+```julia
+using Pkg
+Pkg.activate(".")
+
+include("src/HotMoon.jl")
+using .HotMoon
+
+println("="^60)
+println("Hot Moon 1D Climate Simulation")
+println("="^60)
+
+println("\nCreating moon...")
+moon = HotMoonBody(18)
+println(moon)
+
+T0 = fill(285.0, moon.n_lat)
+println("Initial temperature: $(T0[1] - 273.15)°C")
+
+sim_hours = 20000.0
+println("\nRunning simulation for $(round(Int, sim_hours)) hours...")
+progress = make_progress_callback(sim_hours, update_interval_hours=500)
+@time sol = run_simulation(moon, sim_hours, T0, callback=progress)
+println()
+
+println("Simulation complete!")
+println("  Number of timesteps: $(length(sol.t))")
+println("  Final time: $(sol.t[end]/3600) hours")
+
+final_temps = sol.u[end] .- 273.15
+global_mean = sum(final_temps .* moon.cell_areas)
+println("\nFinal statistics:")
+println("  Global mean: $(round(global_mean, digits=1))°C")
+println("  Equator: $(round(final_temps[1], digits=1))°C")
+println("  Pole: $(round(final_temps[end], digits=1))°C")
+
+# Save results
+config = RunConfig("1d")
+ctx = initialize_run(config)
+save_results!(ctx, sol, moon, T0=T0)
+generate_plots!(ctx, sol, moon)
+finalize_run!(ctx)
+```
+
+## Output Files
+
+The simulation generates these files in `output/latest/`:
+
+- **solution.jls** - Serialized ODE solution for reloading
+- **moon.jls** - Moon configuration
+- **README.md** - Run metadata and parameters
+- **plots/summary_global_mean.png** - Global mean temperature over time
+- **plots/summary_latitude_profile.png** - Temperature vs latitude profile
+- **plots/summary_heatmap.png** - Temperature evolution heatmap
+- **plots/summary_latitude_range.png** - Mean temperature and day/night range by latitude
+- **plots/summary_latitude_timeseries.png** - Temperature timeseries for each band
+
+## Understanding the Physics
+
+<Info>
+  **Day/Night Cycle**: With 18 latitude bands and a 28-hour rotation period, each band experiences periodic heating from solar radiation.
+
+  **Eclipse**: The 4-hour eclipse every 64 hours (orbital period) causes rapid cooling visible in all bands.
+
+  **Heat Transport**: Latitudinal heat diffusion drives energy from equator toward poles using conduction + convection.
+</Info>
+
+## Resolution Guidelines
+
+| Latitude Bands | Runtime | Use Case |
+|----------------|---------|----------|
+| 9              | Very fast | Quick tests, parameter exploration |
+| 18             | Fast | Default for most applications |
+| 36             | Moderate | Higher fidelity polar gradients |
+| 90             | Slow | Research-grade precision |
+
+<Warning>
+  Increasing from 18 to 90 bands increases runtime by ~25x but often adds minimal scientific insight for 1D models. Start with 18.
+</Warning>
+
+## Common Patterns
+
+### Custom Initial Temperature Gradient
+
+```julia
+# Linear gradient from hot equator to cold pole
+T0 = [310.0 - 60.0 * (lat/90.0) for lat in moon.latitudes]
+```
+
+### Analyzing Equilibrium State
+
+```julia
+# Average last 20% of simulation to remove transients
+n_avg = div(length(sol.t), 5)
+temps_equilibrium = mean([sol.u[i] for i in (length(sol.t)-n_avg):length(sol.t)])
+temps_equilibrium_C = temps_equilibrium .- 273.15
+
+println("Equilibrium temperatures:")
+for (i, lat) in enumerate(moon.latitudes)
+    println("  $(round(Int, lat))°: $(round(temps_equilibrium_C[i], digits=1))°C")
+end
+```
+
+### Extracting Time Series for Specific Band
+
+```julia
+# Get equatorial temperature over time (band index 1)
+equator_temps = [sol.u[i][1] - 273.15 for i in 1:length(sol.t)]
+times_hr = sol.t ./ 3600
+
+using Plots
+plot(times_hr, equator_temps, 
+     xlabel="Time (hours)", ylabel="Temperature (°C)",
+     title="Equatorial Temperature")
+```
+
+## Next Steps
+
+- Learn about [2D temperature simulations](/guides/2d-temperature) for spatial detail
+- Explore [visualization options](/guides/visualization) for creating custom plots
+- See [performance tips](/guides/performance) for optimizing runtime

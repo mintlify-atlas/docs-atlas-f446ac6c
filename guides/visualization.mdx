@@ -1,0 +1,517 @@
+---
+title: 'Creating Plots and Animations'
+description: 'How to visualize simulation results with custom plots and animations'
+---
+
+Hot Moon provides comprehensive visualization capabilities through the Plots.jl ecosystem. This guide covers built-in plotting functions, custom visualizations, and animation generation.
+
+## Automatic Visualization
+
+The simplest approach is to use the built-in output system:
+
+```julia
+config = RunConfig("2d_moisture")
+ctx = initialize_run(config)
+
+# ... run simulation ...
+
+save_results!(ctx, sol, moon, T0=T0, M0=M0)
+generate_plots!(ctx, sol, moon)  # Automatic plot generation
+generate_animations!(ctx, sol, moon, hours=448, frame_skip=4, fps=10)
+finalize_run!(ctx)
+```
+
+This creates all standard plots in `output/latest/plots/`.
+
+## Manual Plot Generation
+
+### 1D Plots
+
+For `MoonBody1D` simulations:
+
+```julia
+using Plots
+
+# Global mean temperature over time
+p1 = plot_1d_global_mean_temperature(sol, moon)
+savefig(p1, "global_mean.png")
+
+# Temperature profile by latitude
+p2 = plot_1d_latitude_temperature_profile(sol, moon)
+savefig(p2, "latitude_profile.png")
+
+# Temperature evolution heatmap
+p3 = plot_1d_temperature_heatmap(sol, moon)
+savefig(p3, "heatmap.png")
+
+# Mean ± day/night range by latitude
+p4 = plot_1d_latitude_temperature_range(sol, moon)
+savefig(p4, "latitude_range.png")
+
+# Timeseries for each latitude band
+p5 = plot_1d_latitude_temperature_timeseries(sol, moon)
+savefig(p5, "timeseries.png")
+
+# Or generate all at once
+plot_1d_summary_to_files(sol, moon, "summary.png")
+```
+
+### 2D Snapshots
+
+<Steps>
+  <Step title="Temperature snapshot">
+    ```julia
+    using Plots
+    
+    # Final state snapshot
+    p = plot_field_snapshot(sol, moon, Temperature)
+    savefig(p, "temperature_final.png")
+    
+    # Snapshot at specific time index
+    p2 = plot_field_snapshot(sol, moon, Temperature, time_idx=100)
+    savefig(p2, "temperature_t100.png")
+    ```
+
+    Uses thermal colormap with automatic percentile-based color limits.
+  </Step>
+
+  <Step title="Moisture and precipitation">
+    ```julia
+    # Moisture field (for moisture-coupled simulations)
+    p_moisture = plot_field_snapshot(sol, moon, Moisture)
+    savefig(p_moisture, "moisture.png")
+    
+    # Precipitation rate (mm/hr)
+    p_precip = plot_field_snapshot(sol, moon, Precipitation)
+    savefig(p_precip, "precipitation.png")
+    ```
+  </Step>
+
+  <Step title="Terrain elevation">
+    ```julia
+    # Elevation map with coastline
+    p = plot_elevation_map(moon)
+    savefig(p, "terrain.png")
+    ```
+  </Step>
+
+  <Step title="Biome classification">
+    ```julia
+    # Biome map (requires moisture-coupled simulation)
+    p = plot_field_snapshot(sol, moon, Biome)
+    savefig(p, "biomes.png")
+    
+    # With legend showing all biome types
+    p2 = plot_biome_with_legend(sol, moon)
+    savefig(p2, "biomes_legend.png")
+    
+    # Print statistics
+    n_cells = moon.n_lat * moon.n_lon
+    T_final = reshape(sol.u[end][1:n_cells], moon.n_lat, moon.n_lon)
+    M_final = reshape(sol.u[end][n_cells+1:end], moon.n_lat, moon.n_lon)
+    print_biome_statistics(T_final, M_final, moon)
+    ```
+  </Step>
+</Steps>
+
+### 2D Time Series
+
+Plot global statistics over time:
+
+```julia
+# Global mean temperature (full simulation)
+p = plot_global_mean_timeseries(sol, moon, Temperature, hours=nothing)
+savefig(p, "temp_global_full.png")
+
+# Detail view (last 800 hours)
+p2 = plot_global_mean_timeseries(sol, moon, Temperature, hours=800)
+savefig(p2, "temp_global_detail.png")
+
+# Moisture global mean
+p3 = plot_global_mean_timeseries(sol, moon, Moisture, hours=800)
+savefig(p3, "moisture_global.png")
+
+# Precipitation global mean
+p4 = plot_global_mean_timeseries(sol, moon, Precipitation, hours=800)
+savefig(p4, "precip_global.png")
+```
+
+### Hovmoeller Diagrams
+
+Visualize evolution along one dimension:
+
+```julia
+# Temperature vs longitude and time (averaged over latitude)
+p_lon = plot_longitude_time_hovmoeller(sol, moon, Temperature)
+savefig(p_lon, "hovmoeller_lon.png")
+
+# Temperature vs latitude and time (averaged over longitude)
+p_lat = plot_latitude_time_hovmoeller(sol, moon, Temperature)
+savefig(p_lat, "hovmoeller_lat.png")
+
+# Works for any variable type
+p_moisture = plot_latitude_time_hovmoeller(sol, moon, Moisture)
+savefig(p_moisture, "hovmoeller_moisture.png")
+```
+
+### Latitude Profiles
+
+```julia
+# Mean temperature ± range by latitude
+p = plot_latitude_mean_range(sol, moon, Temperature)
+savefig(p, "latitude_temp_range.png")
+
+# Moisture by latitude
+p2 = plot_latitude_mean_range(sol, moon, Moisture)
+savefig(p2, "latitude_moisture_range.png")
+```
+
+## Animations
+
+<Info>
+  Animations show the last N hours of the simulation as an evolving heatmap GIF.
+</Info>
+
+### Single Variable Animation
+
+```julia
+# Temperature evolution (last 448 hours = 1 metacycle)
+animate_temperature_evolution(
+    sol, moon, 
+    "temperature.gif",
+    hours=448,
+    frame_skip=4,  # Use every 4th frame
+    fps=10
+)
+
+# Moisture evolution
+animate_moisture_evolution(sol, moon, "moisture.gif", hours=448)
+
+# Precipitation evolution
+animate_precipitation_evolution(sol, moon, "precipitation.gif", hours=448)
+```
+
+<Tip>
+  **Animation parameters:**
+  - `hours`: Duration to animate (default: 448 = one orbital + rotation metacycle)
+  - `frame_skip`: Skip frames to reduce file size (4 = use every 4th saved timestep)
+  - `fps`: Frames per second in output GIF (10 is smooth, 5 is slower)
+</Tip>
+
+### Combined Climate Animation
+
+Create side-by-side Temperature/Moisture/Precipitation:
+
+```julia
+animate_combined_climate(
+    sol, moon,
+    "climate.gif",
+    hours=448,
+    frame_skip=4,
+    fps=10
+)
+```
+
+Generates a 3-panel animation showing all fields synchronized in time.
+
+### Generate All Animations
+
+For moisture-coupled simulations:
+
+```julia
+animate_all_variables(
+    sol, moon,
+    "output/animations/",
+    hours=448,
+    frame_skip=4,
+    fps=10
+)
+```
+
+Creates:
+- `climate_animation.gif` (combined)
+- `temperature.gif`
+- `moisture.gif`
+- `precipitation.gif`
+
+<Warning>
+  Large animations (high resolution, long duration, low frame_skip) can create multi-GB GIF files. Start with:
+  - `hours=448` (one metacycle)
+  - `frame_skip=4` (reasonable quality)
+  - Lower resolution grids (90×180) for testing
+</Warning>
+
+## Custom Visualizations
+
+### Extract Data for Plotting
+
+```julia
+# Extract temperature field at specific time
+idx = length(sol.t)  # Final timestep
+T_2d = extract_temperature_field_celsius(sol, moon, idx)
+
+# For moisture-coupled simulations
+M_2d = extract_moisture_field(sol, moon, idx)
+
+# Compute precipitation from T and M
+P_2d = compute_precipitation_field_mm_per_hour(sol, moon, idx)
+
+# Access raw state vector
+state = sol.u[idx]  # Flattened 1D array
+times = sol.t ./ 3600  # Convert seconds to hours
+```
+
+### Custom Heatmap
+
+```julia
+using Plots
+
+# Extract final temperature
+idx = length(sol.t)
+T_2d = extract_temperature_field_celsius(sol, moon, idx)
+
+# Create custom heatmap
+heatmap(
+    moon.longitudes,
+    moon.latitudes,
+    T_2d,
+    xlabel="Longitude (°)",
+    ylabel="Latitude (°)",
+    title="Custom Temperature Map",
+    color=:thermal,
+    clims=(-20, 40),  # Fixed color limits
+    colorbar_title="Temperature (°C)",
+    size=(1200, 600)
+)
+
+# Add coastline
+contour!(
+    moon.longitudes,
+    moon.latitudes,
+    moon.elevation,
+    levels=[0.0],
+    color=:black,
+    linewidth=2,
+    label="Coastline"
+)
+
+savefig("custom_temperature.png")
+```
+
+### Time Series for Specific Location
+
+```julia
+# Find index of a specific lat/lon
+target_lat = 45.0
+target_lon = -120.0
+
+lat_idx = argmin(abs.(moon.latitudes .- target_lat))
+lon_idx = argmin(abs.(moon.longitudes .- target_lon))
+
+println("Nearest cell: lat=$(moon.latitudes[lat_idx])°, lon=$(moon.longitudes[lon_idx])°")
+
+# Extract temperature time series for this cell
+n_cells = moon.n_lat * moon.n_lon
+cell_flat_idx = (lat_idx - 1) * moon.n_lon + lon_idx
+
+T_series = [sol.u[i][cell_flat_idx] - 273.15 for i in 1:length(sol.t)]
+times_hr = sol.t ./ 3600
+
+plot(
+    times_hr,
+    T_series,
+    xlabel="Time (hours)",
+    ylabel="Temperature (°C)",
+    title="Temperature at $(round(target_lat, digits=1))°, $(round(target_lon, digits=1))°",
+    linewidth=2,
+    legend=false
+)
+
+savefig("location_timeseries.png")
+```
+
+### Scatter Plot: Temperature vs Elevation
+
+```julia
+using Plots
+
+idx = length(sol.t)
+T_2d = extract_temperature_field_celsius(sol, moon, idx)
+
+# Flatten arrays
+elevations = vec(moon.elevation)
+temperatures = vec(T_2d)
+
+# Color by latitude
+latitudes_repeated = repeat(moon.latitudes, inner=moon.n_lon)
+
+scatter(
+    elevations,
+    temperatures,
+    zcolor=abs.(latitudes_repeated),
+    xlabel="Elevation",
+    ylabel="Temperature (°C)",
+    title="Temperature vs Elevation (colored by abs latitude)",
+    colorbar_title="|Latitude| (°)",
+    marker=:circle,
+    markersize=2,
+    alpha=0.5,
+    legend=false,
+    size=(800, 600)
+)
+
+vline!([0], color=:black, linestyle=:dash, label="Sea level")
+hline!([0], color=:blue, linestyle=:dash, label="Freezing")
+
+savefig("temp_vs_elevation.png")
+```
+
+### Histogram: Temperature Distribution
+
+```julia
+idx = length(sol.t)
+T_2d = extract_temperature_field_celsius(sol, moon, idx)
+
+histogram(
+    vec(T_2d),
+    bins=50,
+    xlabel="Temperature (°C)",
+    ylabel="Frequency",
+    title="Temperature Distribution",
+    legend=false,
+    size=(800, 500)
+)
+
+vline!([0], color=:blue, linewidth=2, label="Freezing point")
+
+savefig("temp_histogram.png")
+```
+
+## Visualization Helpers
+
+### Add Eclipse Shading
+
+```julia
+# Highlight eclipse periods on time series plots
+using Plots
+
+times_hr = sol.t ./ 3600
+T_global = [sum(extract_temperature_field_celsius(sol, moon, i) .* moon.cell_areas) 
+            for i in 1:length(sol.t)]
+
+p = plot(times_hr, T_global, xlabel="Time (hours)", ylabel="Global Mean (°C)", 
+         title="Temperature with Eclipse Shading", legend=false)
+
+# Add eclipse shading (built-in helper)
+add_eclipse_shading_to_plot!(times_hr[1], times_hr[end])
+
+savefig(p, "with_eclipse.png")
+```
+
+### Add Day/Night Shading (1D)
+
+```julia
+# For 1D plots, visualize rotation period
+add_day_night_shading_to_plot!(times_hr[1], times_hr[end])
+```
+
+### Custom Colormaps
+
+Available colormaps for different variables:
+
+```julia
+# Built-in schemes
+:thermal       # Temperature (yellow-red-white)
+:Blues         # Moisture (white-blue)
+:YlGnBu        # Precipitation (yellow-green-blue)
+:terrain       # Elevation (green-brown-white)
+
+# Custom discrete colormap for biomes
+biome_cmap = cgrad([RGB(c...) for c in BIOME_COLORS_RGB], NUM_BIOMES, categorical=true)
+```
+
+## Performance Tips
+
+<Tip>
+  **Speed up visualization:**
+  - Use `frame_skip=4` or higher for animations
+  - Limit `hours` parameter to recent simulation time
+  - Generate plots after simulation completes (not during)
+  - For very large grids (360×720), downsample before plotting:
+
+  ```julia
+  T_downsampled = T_2d[1:2:end, 1:2:end]  # Every other cell
+  ```
+</Tip>
+
+### Memory Management
+
+```julia
+# Clear plot cache between large animations
+GC.gc()
+
+# Save plots individually rather than holding in memory
+for var in [Temperature, Moisture, Precipitation]
+    p = plot_field_snapshot(sol, moon, var)
+    savefig(p, "$(variable_name(var)).png")
+    p = nothing
+    GC.gc()
+end
+```
+
+## Exporting Data for External Tools
+
+### Save as NetCDF (requires NCDatasets.jl)
+
+```julia
+using NCDatasets
+
+# Extract final state
+idx = length(sol.t)
+T_2d = extract_temperature_field_celsius(sol, moon, idx) .+ 273.15  # Back to Kelvin
+
+# Create NetCDF file
+ds = NCDataset("output.nc", "c")
+defDim(ds, "lat", moon.n_lat)
+defDim(ds, "lon", moon.n_lon)
+
+defVar(ds, "latitude", Float64, ("lat",))
+defVar(ds, "longitude", Float64, ("lon",))
+defVar(ds, "temperature", Float64, ("lat", "lon"))
+defVar(ds, "elevation", Float64, ("lat", "lon"))
+
+ds["latitude"][:] = moon.latitudes
+ds["longitude"][:] = moon.longitudes
+ds["temperature"][:, :] = T_2d
+ds["elevation"][:, :] = moon.elevation
+
+close(ds)
+```
+
+### Save as CSV
+
+```julia
+using DelimitedFiles
+
+idx = length(sol.t)
+T_2d = extract_temperature_field_celsius(sol, moon, idx)
+
+# Flatten to table format
+data = [(moon.latitudes[i], moon.longitudes[j], T_2d[i, j], moon.elevation[i, j])
+        for i in 1:moon.n_lat for j in 1:moon.n_lon]
+
+header = ["lat" "lon" "temperature_C" "elevation"]
+data_matrix = hcat([[d[1], d[2], d[3], d[4]] for d in data]...)'
+
+open("climate_data.csv", "w") do io
+    writedlm(io, header, ',')
+    writedlm(io, data_matrix, ',')
+end
+```
+
+## Next Steps
+
+- Optimize [simulation performance](/guides/performance) before generating large visualizations
+- Learn about [1D simulations](/guides/1d-simulations) for quick iteration
+- Explore [moisture coupling](/guides/moisture-coupling) for biome visualizations
+- Check the [API reference](/api/visualization-functions) for complete function signatures
