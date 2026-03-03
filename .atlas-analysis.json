@@ -1,0 +1,131 @@
+{
+  "projectType": "framework",
+  "projectName": "Hot Moon Climate Simulator",
+  "projectDescription": "A Julia framework for modeling 2D climate dynamics on exoplanet moons using energy balance equations",
+  "theme": "aspen",
+  "primaryColor": "#E67E22",
+  "lightColor": "#F39C12",
+  "darkColor": "#D35400",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/physics-model",
+              "concepts/orbital-mechanics",
+              "concepts/simulation-modes"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/1d-simulations",
+              "guides/2d-temperature",
+              "guides/moisture-coupling",
+              "guides/terrain-generation",
+              "guides/visualization",
+              "guides/performance"
+            ]
+          },
+          {
+            "group": "Physics",
+            "pages": [
+              "physics/radiative-transfer",
+              "physics/heat-transport",
+              "physics/moisture-dynamics",
+              "physics/biomes",
+              "physics/atmospheric-circulation"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Moon Types",
+            "pages": [
+              "api/moon-types"
+            ]
+          },
+          {
+            "group": "Simulation",
+            "pages": [
+              "api/simulation-functions",
+              "api/initial-conditions"
+            ]
+          },
+          {
+            "group": "Physics Functions",
+            "pages": [
+              "api/radiative-functions",
+              "api/transport-functions",
+              "api/moisture-functions",
+              "api/biome-functions"
+            ]
+          },
+          {
+            "group": "Geometry",
+            "pages": [
+              "api/solar-geometry",
+              "api/terrain-generation"
+            ]
+          },
+          {
+            "group": "Visualization",
+            "pages": [
+              "api/visualization-functions"
+            ]
+          },
+          {
+            "group": "Constants",
+            "pages": [
+              "api/physical-constants"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "1D and 2D climate simulation modes with ODE-based energy balance",
+    "Realistic orbital mechanics with 28-hour rotation and periodic eclipses",
+    "Procedural terrain generation with elevation-dependent climate effects",
+    "Advanced moisture dynamics with evaporation and orographic precipitation",
+    "12-biome classification system with distinct thermal properties",
+    "Two-layer atmospheric model simulating Hadley cells",
+    "Comprehensive visualization suite with animations and analysis tools",
+    "Efficient parallel computation for large-scale simulations"
+  ],
+  "publicApiSurface": [
+    "HotMoonBody(n_lat) -> MoonBody1D",
+    "HotMoonBody(n_lat, n_lon) -> MoonBody2D",
+    "run_simulation(moon, hours, T0)",
+    "run_simulation_with_moisture(moon, hours, T0, M0)",
+    "estimate_initial_temperature_and_moisture(moon)",
+    "compute_surface_albedo(T)",
+    "compute_total_ir_optical_depth(M)",
+    "compute_saturation_moisture_at_temperature(T)",
+    "classify_cell_biome(T, M, elevation)",
+    "get_zenith(moon, t, i)",
+    "get_zenith_2d(moon, t, i, j)",
+    "plot_field_snapshot(moon, sol, t)",
+    "animate_field_evolution(moon, sol)",
+    "generate_fractal_terrain(seed, scale, octaves)",
+    "ROTATION_PERIOD, ORBITAL_PERIOD, ECLIPSE_DURATION",
+    "SOLAR_CONSTANT, STEFAN_BOLTZMANN",
+    "BIOME_* constants and BIOME_NAMES"
+  ]
+}
